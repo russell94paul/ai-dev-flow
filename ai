@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SKILL_DIR="$HOME/ai-dev-flow/skills"
+AHK_SCRIPT="C:\\Users\\PaulRussell\\ai-dev-flow\\claude_paste.ahk"
+CLAUDE_CMD="C:\\Users\\PaulRussell\\AppData\\Roaming\\npm\\claude.cmd"
+
+# -----------------------------
+# Validate input
+# -----------------------------
+if [ $# -lt 1 ]; then
+  echo "Usage: ai <skill-name|feature> [context]"
+  exit 1
+fi
+
+QUERY="$1"
+shift
+CONTEXT="$*"
+
+# -----------------------------
+# Mode detection
+# -----------------------------
+if [[ "$QUERY" == "feature" ]]; then
+  MODE="feature"
+else
+  MODE="single"
+fi
+
+# -----------------------------
+# FEATURE MODE
+# -----------------------------
+if [[ "$MODE" == "feature" ]]; then
+
+  GRILL=$(cat "$SKILL_DIR/grill-me/SKILL.md")
+  PRD=$(cat "$SKILL_DIR/write-a-prd/SKILL.md")
+  PLAN=$(cat "$SKILL_DIR/prd-to-plan/SKILL.md")
+  TDD=$(cat "$SKILL_DIR/tdd/SKILL.md")
+
+  OUTPUT="================================
+[FEATURE WORKFLOW]
+================================
+
+You are an expert software engineer following a structured development workflow.
+
+You will guide the user through the FULL feature lifecycle:
+
+---
+
+## STEP 1: GRILL (Clarify requirements)
+$GRILL
+
+---
+
+## STEP 2: WRITE PRD
+
+Produce a clean, structured Product Requirements Document using markdown.
+
+The PRD must include:
+- Overview
+- Goals
+- Functional requirements
+- Non-functional requirements
+- Edge cases
+- Success criteria
+
+$PRD
+
+---
+
+## STEP 3: CREATE IMPLEMENTATION PLAN
+
+Break the PRD into a step-by-step implementation plan.
+
+Requirements:
+- Use a checklist format
+- Each step must be small and actionable
+- Each step should map to code changes
+- Avoid vague steps
+
+$PLAN
+
+---
+
+## STEP 4: IMPLEMENT USING TDD
+Implement the feature using test-driven development.
+
+$TDD
+
+---
+
+## WORKFLOW EXECUTION RULES
+You MUST follow this process strictly:
+
+### Phase 1: GRILL
+- Ask one question at a time
+- Do NOT proceed until user answers
+- When done, say: "GRILL COMPLETE"
+
+### Phase 2: PRD
+- Produce a structured PRD
+- Ask for confirmation before continuing
+- Wait for user approval
+
+### Phase 3: PLAN
+- Break PRD into steps
+- Each step must be actionable
+- Ask for confirmation before continuing
+
+### Phase 4: TDD
+- Implement step-by-step
+- Write tests first
+- Validate each step before proceeding
+
+### CRITICAL RULES
+- NEVER skip phases
+- NEVER assume missing information
+- ALWAYS wait for user confirmation between phases
+- ALWAYS state current phase clearly
+
+---
+
+## FILE OUTPUT REQUIREMENTS
+
+When you complete each phase:
+
+### After PRD phase:
+- Save the PRD to a file named `PRD.md` in the project root
+- Use clean markdown formatting
+- Overwrite the file if it already exists
+
+### After PLAN phase:
+- Save the implementation plan to `plan.md` in the project root
+- Format as a checklist with actionable steps
+- Each step should be small and testable
+
+### Execution rules:
+- Use available file tools to write files
+- Confirm file creation to the user
+- Do not skip saving files
+
+---
+
+## REPO CONTEXT
+
+- You are working inside a real code repository
+- Prefer relative paths from project root
+- Ensure files are created in the correct location
+
+User request:
+$CONTEXT
+"
+
+  STAGE="[FEATURE]"
+
+# -----------------------------
+# SINGLE SKILL MODE
+# -----------------------------
+else
+
+  # Determine workflow stage
+  case "$QUERY" in
+    grill*) STAGE="[GRILL]" ;;
+    write-a-prd*) STAGE="[PRD]" ;;
+    prd-to-plan*) STAGE="[PLAN]" ;;
+    tdd*) STAGE="[TDD]" ;;
+    triage*) STAGE="[TRIAGE]" ;;
+    *) STAGE="[AI]" ;;
+  esac
+
+  # Find matching skill
+  MATCH=$(find "$SKILL_DIR" -mindepth 1 -maxdepth 1 -type d \
+    | grep -i "/[^/]*$QUERY[^/]*$" \
+    | head -n 1 || true)
+
+  if [ -z "$MATCH" ]; then
+    echo "‚ùå Skill not found: $QUERY"
+    echo ""
+    echo "Available skills:"
+    find "$SKILL_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+    exit 1
+  fi
+
+  OUTPUT=$(cat "$MATCH/SKILL.md")
+
+  # Add visible workflow header
+  OUTPUT="================================
+$STAGE WORKFLOW
+================================
+
+$OUTPUT"
+
+  if [ -n "$CONTEXT" ]; then
+    OUTPUT="$OUTPUT
+
+----
+User context:
+$CONTEXT"
+  fi
+
+fi
+
+# -----------------------------
+# Copy to clipboard
+# -----------------------------
+echo "$OUTPUT" | clip.exe
+
+echo ""
+echo "Ì∑† Mode: $MODE"
+echo "Ìø∑Ô∏è Stage: $STAGE"
+echo "Ì≥ã Prompt copied to clipboard"
+
+# -----------------------------
+# Launch Claude
+# -----------------------------
+echo "Ì∫Ä Opening Claude..."
+
+powershell.exe -NoProfile -Command "Start-Process '$CLAUDE_CMD'"
+
+# -----------------------------
+# Wait for Claude to open
+# -----------------------------
+sleep 6
+
+# -----------------------------
+# Trigger AutoHotkey paste
+# -----------------------------
+echo "‚å®Ô∏è Sending prompt..."
+
+powershell.exe -Command "& '$AHK_SCRIPT' '$QUERY'"
+
+echo "‚úÖ Done. Claude should now be running your workflow."
