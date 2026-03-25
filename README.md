@@ -144,52 +144,9 @@ skills/
     SKILL.md
 ```
 
-<<<<<<< HEAD
 Then call it with:
 ```bash
 ai your-skill
 ```
 
 See `skills/write-a-skill/SKILL.md` for the skill authoring guide.
-=======
-Then integrate them into workflows via the CLI.
-
----
-
-## ⚠️ Notes
-
-* This system is **human-in-the-loop**
-* You control all decisions
-* Outputs are transparent and inspectable
-
----
-
-## 💡 Philosophy
-
-> Structure beats prompting.
-
-ai-dev-flow is built on:
-
-* clear thinking
-* iterative refinement
-* traceable decisions
-* developer control
-
----
-
-## 🤝 Contributing
-
-This project is evolving quickly.
-
-Contributions, ideas, and improvements are welcome.
-
----
-
-## ⭐ Final Thought
-
-This is not just a tool.
-
-It’s the beginning of a:
-
-> 🧠 **self-improving AI engineering system**
->>>>>>> d3b9a6fe75992239fdc80005b581ebe9e15ed0e1
