@@ -2,3 +2,4 @@ prompt.md
 *.log
 .env
 node_modules/
+.claude/

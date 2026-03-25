@@ -35,7 +35,30 @@ Key requirements:
 
 ---
 
+## Artifacts
+
+```text
+api-sync/
+  PRD.md     ← written by `ai feature` after PRD phase
+  plan.md    ← written by `ai feature` after PLAN phase
+```
+
+---
+
+## TDD Phase
+
+After plan is confirmed:
+
+```bash
+ai tdd "api-sync"
+```
+
+Reads `api-sync/plan.md` and implements via Claude Code CLI with git guardrails active.
+
+---
+
 ## Notes
 
-- TDD used for implementation
+- GRILL/PRD/PLAN run in Claude chat; TDD runs in Claude Code CLI
 - Edge cases discovered during grill phase
+- Each TDD cycle: one failing test → minimal code to pass → repeat

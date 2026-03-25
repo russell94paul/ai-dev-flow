@@ -105,3 +105,58 @@ After all tests pass, look for [refactor candidates](refactoring.md):
 [ ] Code is minimal for this test
 [ ] No speculative features added
 ```
+
+## Summary Output
+
+When all cycles are complete:
+
+### Console — one line only
+
+Print this and nothing more:
+
+```
+TDD COMPLETE — summary saved to ./<feature-slug>/tdd-summary.md (tests: N GREEN)
+```
+
+Do NOT stream test tables, file diffs, or verbose output to the console unless the user asks.
+
+### Write `tdd-summary.md`
+
+Write `./<feature-slug>/tdd-summary.md` before printing the console line. Overwrite each run.
+
+```markdown
+# TDD Summary: <feature-slug>
+
+**Timestamp:** <ISO 8601>
+**Plan source:** ./<feature-slug>/plan.md
+
+## Phases completed
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase 1 | <title> | ✅ GREEN |
+
+## Test results
+
+| # | Test description | Status |
+|---|-----------------|--------|
+| 1 | <behavior tested> | ✅ GREEN |
+
+**Total: N GREEN, N RED**
+
+## Files touched
+
+- `<path>` — created / modified
+
+## Commands run
+
+```
+<exact test-runner commands>
+```
+
+## Design notes
+
+- <decisions, surprises, tradeoffs>
+```
+
+Fill every section with real data. No placeholder text.

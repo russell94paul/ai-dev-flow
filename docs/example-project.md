@@ -71,7 +71,7 @@ Core system that:
 
 ---
 
-## 🟣 Step 2: Execute a Feature
+## 🟣 Step 2: Execute a Feature (GRILL / PRD / PLAN)
 
 Command:
 
@@ -79,16 +79,12 @@ Command:
 ai feature "Design knowledge schema"
 ```
 
----
-
-## 📂 Feature Output
+This runs in Claude chat and produces:
 
 ```text
 knowledge-schema/
-  grill.md
-  prd.md
-  plan.md
-  tdd.md
+  PRD.md     ← written after PRD phase
+  plan.md    ← written after PLAN phase
 ```
 
 ---
@@ -97,7 +93,7 @@ knowledge-schema/
 
 ### 1. Grill
 
-* clarifies requirements
+* clarifies requirements one question at a time
 * identifies edge cases
 * explores existing codebase
 
@@ -108,22 +104,40 @@ knowledge-schema/
 * defines feature goals
 * outlines constraints
 * specifies behavior
+* writes `knowledge-schema/PRD.md`
 
 ---
 
 ### 3. Plan
 
-* breaks work into steps
-* prioritizes vertical slices
-* prepares implementation
+* breaks work into vertical slices with acceptance criteria
+* confirms with user
+* writes `knowledge-schema/plan.md`
+* prints: `PLAN COMPLETE. To begin TDD run: ai tdd "knowledge-schema"`
+
+---
+
+## 🔵 Step 3: Implement via TDD (Claude Code CLI)
+
+Command:
+
+```bash
+ai tdd "knowledge-schema"
+```
+
+This hands off to the Claude Code CLI with:
+
+* git guardrails active (Claude must confirm before any git operation)
+* the TDD skill (red → green → refactor, one vertical slice at a time)
+* the contents of `knowledge-schema/plan.md` as the implementation blueprint
 
 ---
 
 ### 4. TDD
 
 * implements feature incrementally
-* ensures correctness
-* validates behavior
+* writes failing test first, then minimal code to pass
+* validates each slice before moving on
 
 ---
 
