@@ -49,7 +49,7 @@ Iterate on the list until you receive a clear "yes", "confirmed", or equivalent 
 
 ## Phase 4: Write Feature Stubs
 
-For each confirmed feature, create `features/<feature-slug>.md` using this exact structure:
+For each confirmed feature, write a stub to `<base>/<feature-slug>/intake/stub.md` (exact base path is provided in the FILE OUTPUT REQUIREMENTS block appended to this prompt). Use this exact structure:
 
 ```markdown
 # <Feature Name>
@@ -67,7 +67,7 @@ For each confirmed feature, create `features/<feature-slug>.md` using this exact
 - (To be resolved during the grill phase — run: ai feature "<feature-slug>")
 ```
 
-Create the `features/` directory if it does not exist. After writing each file, confirm the exact path to the user.
+Create `<base>/<feature-slug>/intake/` if it does not exist. After writing each file, confirm the exact Windows path to the user.
 
 ---
 

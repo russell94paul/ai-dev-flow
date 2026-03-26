@@ -36,8 +36,15 @@ cat <<'INSTRUCTIONS'
  ai-dev-flow smoke test — manual steps
 ========================================
 
-1. cd into the workspace:
+Notes root for this smoke test:
+  /tmp/devflow-notes
 
+Artifacts land at:
+  /tmp/devflow-notes/devflow-smoke/detached/features/<slug>/
+
+1. Set notes root and cd into the workspace:
+
+     export AI_DEV_FLOW_NOTES_ROOT=/tmp/devflow-notes
      cd /tmp/devflow-smoke
 
 2. Test: feature workflow (GRILL / PRD / PLAN)
@@ -47,8 +54,8 @@ cat <<'INSTRUCTIONS'
    Expected outcomes:
    - Claude GUI opens with the GRILL/PRD/PLAN prompt
    - After PLAN phase, Claude writes:
-       /tmp/devflow-smoke/sample-sync/PRD.md
-       /tmp/devflow-smoke/sample-sync/plan.md
+       /tmp/devflow-notes/devflow-smoke/<branch>/features/sample-sync/specs/prd.md
+       /tmp/devflow-notes/devflow-smoke/<branch>/features/sample-sync/plans/plan.md
    - Claude prints: PLAN COMPLETE. To begin TDD run: ai tdd "sample-sync"
 
 3. Test: TDD handoff (requires plan.md from step 2)
@@ -61,13 +68,15 @@ cat <<'INSTRUCTIONS'
    - A new Claude Code window opens (outside VS Code)
    - AutoHotkey pastes the @file message automatically after ~6 s
    - Claude Code loads guardrails + TDD skill + plan and begins TDD
+   - On completion, summary written to:
+       /tmp/devflow-notes/devflow-smoke/<branch>/features/sample-sync/build/tdd-summary.md
 
    Fallback (if AHK misses):
    - The original terminal prints the prompt path
    - Paste manually in Claude Code: @/tmp/devflow-tdd-sample-sync.md
 
    If plan.md is missing, you see:
-       ❌ No plan found at ./sample-sync/plan.md
+       ❌ No plan found at: /tmp/devflow-notes/devflow-smoke/<branch>/features/sample-sync/plans/plan.md
 
    To test the error path before running step 2:
      ai tdd "no-such-feature"

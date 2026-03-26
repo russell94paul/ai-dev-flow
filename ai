@@ -4,6 +4,13 @@ set -euo pipefail
 
 CALLER_DIR=$(pwd)
 SKILL_DIR="$HOME/ai-dev-flow/skills"
+
+# Load local config (sets AI_DEV_FLOW_NOTES_ROOT etc.) if present.
+CONFIG_LOCAL="$HOME/ai-dev-flow/config.local"
+if [[ -f "$CONFIG_LOCAL" ]]; then
+  # shellcheck source=/dev/null
+  source "$CONFIG_LOCAL"
+fi
 AHK_SCRIPT="C:\\Users\\PaulRussell\\ai-dev-flow\\claude_paste.ahk"
 CLAUDE_CMD="C:\\Users\\PaulRussell\\AppData\\Roaming\\npm\\claude.cmd"
 
@@ -33,6 +40,72 @@ make_slug() {
 }
 
 # -----------------------------
+# Shared helper: resolves notes_root, repo_slug, branch_name.
+# Sets local vars in the caller's scope — must be called with 'local' vars
+# already declared in the caller.
+# -----------------------------
+_resolve_notes_base() {
+  if [[ -z "${AI_DEV_FLOW_NOTES_ROOT:-}" ]]; then
+    echo "⚠️  AI_DEV_FLOW_NOTES_ROOT is not set — artifacts will land in the source repo."
+    echo "   Set it in ~/ai-dev-flow/config.local to redirect notes to Obsidian."
+  fi
+  notes_root="${AI_DEV_FLOW_NOTES_ROOT:-$CALLER_DIR}"
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || repo_root="$CALLER_DIR"
+  repo_slug=$(basename "$repo_root")
+  branch_name=$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null) || branch_name="detached"
+  if [[ "$branch_name" == "HEAD" ]]; then branch_name="detached"; fi
+}
+
+# -----------------------------
+# Notes dir resolver — feature level
+# Builds FEATURE_NOTES_DIR (POSIX) and FEATURE_NOTES_DIR_WIN (Windows)
+# and pre-creates the standard subdirectory tree.
+# -----------------------------
+resolve_feature_notes_dir() {
+  local feature_slug="$1"
+  local notes_root repo_root repo_slug branch_name
+  _resolve_notes_base
+
+  FEATURE_NOTES_DIR="$notes_root/$repo_slug/$branch_name/features/$feature_slug"
+
+  mkdir -p \
+    "$FEATURE_NOTES_DIR/intake" \
+    "$FEATURE_NOTES_DIR/discovery" \
+    "$FEATURE_NOTES_DIR/specs" \
+    "$FEATURE_NOTES_DIR/plans" \
+    "$FEATURE_NOTES_DIR/build" \
+    "$FEATURE_NOTES_DIR/qa"
+
+  if command -v cygpath &>/dev/null; then
+    FEATURE_NOTES_DIR_WIN=$(cygpath -w "$FEATURE_NOTES_DIR")
+  else
+    FEATURE_NOTES_DIR_WIN="$FEATURE_NOTES_DIR"
+  fi
+}
+
+# -----------------------------
+# Notes dir resolver — project level
+# Builds FEATURES_BASE_POSIX and FEATURES_BASE_WIN pointing at
+# <notes_root>/<repo>/<branch>/features — the root under which every
+# feature slug gets its own subfolder.  The features/ dir is pre-created;
+# per-slug subdirs (intake/ etc.) are created by Claude at write time.
+# -----------------------------
+resolve_project_notes_dir() {
+  local notes_root repo_root repo_slug branch_name
+  _resolve_notes_base
+
+  FEATURES_BASE_POSIX="$notes_root/$repo_slug/$branch_name/features"
+
+  mkdir -p "$FEATURES_BASE_POSIX"
+
+  if command -v cygpath &>/dev/null; then
+    FEATURES_BASE_WIN=$(cygpath -w "$FEATURES_BASE_POSIX")
+  else
+    FEATURES_BASE_WIN="$FEATURES_BASE_POSIX"
+  fi
+}
+
+# -----------------------------
 # Mode detection
 # -----------------------------
 if [[ "$QUERY" == "feature" ]]; then
@@ -54,6 +127,7 @@ STAGE="[AI]"
 if [[ "$MODE" == "feature" ]]; then
 
   FEATURE_SLUG=$(make_slug "${CONTEXT:-feature}")
+  resolve_feature_notes_dir "$FEATURE_SLUG"
 
   GRILL=$(cat "$SKILL_DIR/grill-me/SKILL.md")
   PRD=$(cat "$SKILL_DIR/write-a-prd/SKILL.md")
@@ -134,16 +208,23 @@ You MUST follow this process strictly:
 
 ## FILE OUTPUT REQUIREMENTS
 
-You are working inside the user's project repository (the directory where they ran this command).
+All artifacts go to a dedicated notes directory — NOT inside the active repo.
+
+### Paths (POSIX)
+- PRD:  $FEATURE_NOTES_DIR/specs/prd.md
+- Plan: $FEATURE_NOTES_DIR/plans/plan.md
+
+### Paths (Windows — use these when writing files via file tools)
+- PRD:  $FEATURE_NOTES_DIR_WIN\\specs\\prd.md
+- Plan: $FEATURE_NOTES_DIR_WIN\\plans\\plan.md
 
 ### After PRD phase:
-- Create directory ./$FEATURE_SLUG/ if it does not exist
-- Save the PRD to ./$FEATURE_SLUG/PRD.md
+- Write the PRD to the specs path above (directory already exists)
 - Use clean markdown formatting
 - Confirm the exact path to the user
 
 ### After PLAN phase:
-- Save the implementation plan to ./$FEATURE_SLUG/plan.md
+- Write the implementation plan to the plans path above (directory already exists)
 - Format as phases with acceptance-criteria checklists
 - Confirm the exact path to the user
 - Then print exactly: PLAN COMPLETE. To begin TDD run: ai tdd \"$FEATURE_SLUG\"
@@ -157,9 +238,8 @@ You are working inside the user's project repository (the directory where they r
 
 ## REPO CONTEXT
 
-- You are working inside a real code repository
-- Use relative paths from the current working directory (where the user ran \`ai feature\`)
-- The feature folder is: ./$FEATURE_SLUG/
+- The feature folder (for notes only) is: $FEATURE_NOTES_DIR
+- Do NOT write artifacts inside the active source repo
 
 User request:
 $CONTEXT"
@@ -171,6 +251,8 @@ $CONTEXT"
 # -----------------------------
 elif [[ "$MODE" == "new-project" ]]; then
 
+  resolve_project_notes_dir
+
   NEW_PROJECT=$(cat "$SKILL_DIR/new-project/SKILL.md")
 
   OUTPUT="================================
@@ -178,6 +260,27 @@ elif [[ "$MODE" == "new-project" ]]; then
 ================================
 
 $NEW_PROJECT
+
+---
+
+## FILE OUTPUT REQUIREMENTS
+
+All feature stubs go to the notes directory — NOT inside the active repo.
+
+### Base directory
+- POSIX:   $FEATURES_BASE_POSIX
+- Windows: $FEATURES_BASE_WIN
+
+### Per-feature stub path
+For each approved slug <slug>, write the stub to:
+- POSIX:   $FEATURES_BASE_POSIX/<slug>/intake/stub.md
+- Windows: $FEATURES_BASE_WIN\\<slug>\\intake\\stub.md
+
+The features/ base directory already exists. You must create <slug>/intake/ before writing each file.
+
+### After writing each stub:
+- Confirm the exact Windows path to the user
+- Do NOT write any files inside the active source repo
 
 ---
 
@@ -198,10 +301,12 @@ elif [[ "$MODE" == "tdd" ]]; then
     exit 1
   fi
 
-  PLAN_PATH="$CALLER_DIR/$FEATURE_SLUG/plan.md"
+  resolve_feature_notes_dir "$FEATURE_SLUG"
+  PLAN_PATH="$FEATURE_NOTES_DIR/plans/plan.md"
+  TDD_SUMMARY_PATH="$FEATURE_NOTES_DIR/build/tdd-summary.md"
 
   if [[ ! -f "$PLAN_PATH" ]]; then
-    echo "❌ No plan found at ./$FEATURE_SLUG/plan.md"
+    echo "❌ No plan found at: $PLAN_PATH"
     echo "   Run 'ai feature \"<idea>\"' first to generate a plan."
     exit 1
   fi
@@ -255,19 +360,19 @@ Keep the terminal quiet during TDD. Per cycle, print only:
 
 When all phases are complete, print this single summary line and nothing else:
 
-  TDD COMPLETE — summary saved to ./$FEATURE_SLUG/tdd-summary.md (tests: N GREEN)
+  TDD COMPLETE — summary saved to $TDD_SUMMARY_PATH (tests: N GREEN)
 
 Replace N with the actual passing test count. Do NOT stream full test output, file diffs, or detailed tables to the console.
 
 ### Summary file
 
-Write the full TDD record to ./$FEATURE_SLUG/tdd-summary.md immediately before printing the console summary. Overwrite if the file exists. Use this exact template:
+Write the full TDD record to $TDD_SUMMARY_PATH immediately before printing the console summary. Overwrite if the file exists. Use this exact template:
 
 \`\`\`markdown
 # TDD Summary: $FEATURE_SLUG
 
 **Timestamp:** <ISO 8601 timestamp>
-**Plan source:** ./$FEATURE_SLUG/plan.md
+**Plan source:** $PLAN_PATH
 
 ## Phases completed
 
@@ -320,8 +425,9 @@ Fill every section with real data from the session. Do not leave placeholder tex
   echo ""
   echo "🤖 Mode: $MODE"
   echo "🎯 Stage: $STAGE"
-  echo "📋 Plan: $PLAN_PATH"
-  echo "📝 Prompt: $PROMPT_FILE"
+  echo "📋 Plan:    $PLAN_PATH"
+  echo "📄 Summary: $TDD_SUMMARY_PATH"
+  echo "📝 Prompt:  $PROMPT_FILE"
   echo "🚀 Opening Claude Code..."
 
   # Open a new Claude Code window (same as other modes).

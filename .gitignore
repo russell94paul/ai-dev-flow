@@ -3,3 +3,4 @@ prompt.md
 .env
 node_modules/
 .claude/
+config.local

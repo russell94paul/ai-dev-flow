@@ -40,7 +40,7 @@ Decomposes a project idea into structured feature stubs.
 - Conducts a scoping interview (one question at a time)
 - Proposes 3–8 features with slugs, summaries, and rationale
 - Asks for confirmation before writing anything
-- Writes `features/<feature-slug>.md` stubs to your current directory
+- Writes `features/<slug>/intake/stub.md` stubs to your notes vault
 - Prints suggested `ai feature` commands in dependency order
 
 ---
@@ -69,16 +69,60 @@ New here? See the full setup and walkthrough: **[docs/how-to-run-real-feature.md
 
 ---
 
-## Artifact layout
+## Notes storage
+
+All markdown artifacts produced by `ai feature` and `ai tdd` land in a dedicated notes directory, completely separate from your source repo.
+
+### Default behavior
+
+Without any configuration, artifacts are written alongside your project (inside `CALLER_DIR`), preserving the original layout.
+
+### Redirecting to Obsidian (or any notes root)
+
+Set `AI_DEV_FLOW_NOTES_ROOT` to your vault or notes folder:
+
+```bash
+export AI_DEV_FLOW_NOTES_ROOT="C:\Users\PaulRussell\Obsidian\AI-Dev-Flow"
+```
+
+Add that line to your `~/.bashrc` or `~/.zshrc` to make it permanent.
+
+### Folder structure
+
+All commands write into the same vault hierarchy, organized by repo and branch so notes from different projects never collide:
 
 ```
-your-project/
-  <feature-slug>/
-    PRD.md           ← written by `ai feature` (PRD phase)
-    plan.md          ← written by `ai feature` (PLAN phase)
-    tdd-summary.md   ← written by `ai tdd` on completion
-  features/
-    <slug>.md        ← written by `ai new-project`
+<NOTES_ROOT>/
+  <repo-name>/
+    <branch-name>/
+      features/
+        <feature-slug>/
+          intake/
+            stub.md        ← written by `ai new-project`
+          discovery/       ← reserved for future discovery skills
+          specs/
+            prd.md         ← written by `ai feature` (PRD phase)
+          plans/
+            plan.md        ← written by `ai feature` (PLAN phase)
+          build/
+            tdd-summary.md ← written by `ai tdd` on completion
+          qa/              ← reserved for future QA skills
+```
+
+`ai new-project` seeds the `intake/stub.md` for each feature it produces. Running `ai feature "<slug>"` on any of those slugs then fills in the remaining subfolders alongside it.
+
+Example with `AI_DEV_FLOW_NOTES_ROOT=/c/Users/PaulRussell/Documents/ai-dev-flow`:
+
+```
+Documents\ai-dev-flow\
+  my-app\
+    main\
+      features\
+        auth\
+          intake\stub.md
+          specs\prd.md
+          plans\plan.md
+          build\tdd-summary.md
 ```
 
 ---
@@ -122,7 +166,7 @@ ai tdd "sample-sync"
 
 # 3. New-project decomposition
 ai new-project "Sample AI app"
-# → writes features/<slug>.md stubs after confirmation
+# → writes features/<slug>/intake/stub.md stubs to notes vault after confirmation
 
 # 4. Error path — tdd without a plan
 ai tdd "no-such-feature"
