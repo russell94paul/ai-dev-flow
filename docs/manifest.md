@@ -160,6 +160,20 @@ Lives at `<NOTES_ROOT>/<repo>/<branch>/features/index.json`. Consumed by `ai loo
 
 ---
 
+## `ai backlog-add` — Seeding the index from stubs
+
+After `ai new-project` writes `features/<slug>/intake/stub.md` files, run `ai backlog-add` to register them in `features/index.json`.
+
+The command scans for any slug directory that has an `intake/stub.md` but no entry in the index, then prompts:
+
+1. **Default goal** for all new features (bulk, e.g. `deploy`)
+2. **Starting priority** (auto-increments from the current max)
+3. **Per-feature overrides** — press Enter to accept the bulk default
+
+This keeps `ai new-project` as a pure Claude-driven ideation step while giving you explicit control over what enters the execution backlog and at what priority.
+
+---
+
 ## `ai run` — Stage pipeline
 
 `ai run <slug>` runs stages sequentially. Each stage maps to an existing CLI mode:

@@ -112,6 +112,29 @@ ai prefect-run "sample-sync"
 
 ---
 
+### `ai backlog-add`
+
+Scans the vault for feature stubs (`features/<slug>/intake/stub.md`) that are not yet in `features/index.json` and prompts to add them to the backlog.
+
+Run this after `ai new-project` to queue the generated features for execution.
+
+```bash
+ai backlog-add
+# → finds unindexed stubs
+# → prompts for bulk default goal (e.g. deploy) and starting priority
+# → allows per-feature overrides
+# → appends entries to features/index.json
+```
+
+Typical workflow:
+```
+ai new-project "My App"   → Claude session: scoping + stub files
+ai backlog-add            → queue stubs in index.json
+ai loop                   → run the backlog
+```
+
+---
+
 ### `ai state clean <slug>`
 
 Removes `state.json` for a feature slug, resetting tracked command history.

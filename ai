@@ -320,6 +320,8 @@ elif [[ "$QUERY" == "run" ]]; then
   MODE="run"
 elif [[ "$QUERY" == "loop" ]]; then
   MODE="loop"
+elif [[ "$QUERY" == "backlog-add" ]]; then
+  MODE="backlog-add"
 else
   MODE="single"
 fi
@@ -514,6 +516,20 @@ The features/ base directory already exists. You must create <slug>/intake/ befo
 ### After writing each stub:
 - Confirm the exact Windows path to the user
 - Do NOT write any files inside the active source repo
+
+### Final step — after all stubs are written:
+Print a summary block exactly like this (replace the slug list with the real slugs):
+
+\`\`\`
+NEW-PROJECT COMPLETE
+
+Features created:
+  - <slug-1>
+  - <slug-2>
+
+To queue these for execution run:
+  ai backlog-add
+\`\`\`
 
 ---
 
@@ -1350,6 +1366,149 @@ PYEOF
 
   generate_evidence "$FEATURE_SLUG"
   exit $_prefect_exit
+
+# -----------------------------
+# BACKLOG-ADD MODE
+# -----------------------------
+elif [[ "$MODE" == "backlog-add" ]]; then
+
+  require_python
+  resolve_branch_root
+
+  INDEX_PATH="$BRANCH_ROOT_POSIX/features/index.json"
+  FEATURES_DIR="$BRANCH_ROOT_POSIX/features"
+
+  # Find stubs not yet in index.json
+  _new_slugs=$(INDEX_PATH="$INDEX_PATH" FEATURES_DIR="$FEATURES_DIR" \
+  $PYTHON3 - <<'PYEOF'
+import os, json
+from pathlib import Path
+
+features_dir = Path(os.environ['FEATURES_DIR'])
+index_path   = Path(os.environ['INDEX_PATH'])
+
+# Load existing index (empty if it doesn't exist yet)
+existing_slugs = set()
+if index_path.exists():
+    with open(index_path) as f:
+        existing_slugs = {e['slug'] for e in json.load(f).get('features', [])}
+
+# Find stub.md files whose slug isn't in the index
+for stub in sorted(features_dir.glob('*/intake/stub.md')):
+    slug = stub.parent.parent.name
+    if slug not in existing_slugs:
+        print(slug)
+PYEOF
+)
+
+  if [[ -z "$_new_slugs" ]]; then
+    echo "✅ No unindexed stubs found — backlog is already up to date."
+    echo "   (stubs live at: $FEATURES_DIR/<slug>/intake/stub.md)"
+    exit 0
+  fi
+
+  echo ""
+  echo "=== Unindexed stubs found ==="
+  while IFS= read -r _s; do
+    echo "  - $_s"
+  done <<< "$_new_slugs"
+  echo ""
+
+  # Bulk defaults
+  read -r -p "Default goal for all (prep/feature/tdd/qa/prefect/deploy) [deploy]: " _bulk_goal
+  _bulk_goal="${_bulk_goal:-deploy}"
+
+  # Next available priority
+  _next_priority=$(INDEX_PATH="$INDEX_PATH" $PYTHON3 - <<'PYEOF'
+import os, json
+from pathlib import Path
+p = Path(os.environ['INDEX_PATH'])
+if not p.exists():
+    print(1)
+else:
+    with open(p) as f:
+        feats = json.load(f).get('features', [])
+    priorities = [e.get('priority', 0) for e in feats]
+    print((max(priorities) + 1) if priorities else 1)
+PYEOF
+)
+
+  read -r -p "Starting priority [$_next_priority]: " _start_priority
+  _start_priority="${_start_priority:-$_next_priority}"
+
+  echo ""
+  echo "--- Per-feature overrides (press Enter to accept default) ---"
+  echo ""
+
+  _entries=()
+  _pri=$_start_priority
+  while IFS= read -r _slug <&3; do
+    read -r -p "  $_slug — goal [$_bulk_goal]: " _goal_override || true
+    _goal="${_goal_override:-$_bulk_goal}"
+    read -r -p "  $_slug — priority [$_pri]: " _pri_override || true
+    _p="${_pri_override:-$_pri}"
+    _entries+=("$_slug|$_goal|$_p")
+    _pri=$(( _pri + 1 ))
+    echo ""
+  done 3<<< "$_new_slugs"
+
+  # Confirm
+  echo "=== Will add to $INDEX_PATH ==="
+  for _entry in "${_entries[@]}"; do
+    IFS='|' read -r _es _eg _ep <<< "$_entry"
+    echo "  $(_ep_pad=6; printf '%-20s  goal: %-8s  priority: %s' "$_es" "$_eg" "$_ep")"
+  done
+  echo ""
+  read -r -p "Confirm? [Y/n]: " _confirm || true
+  if [[ "$_confirm" == "n" || "$_confirm" == "N" ]]; then
+    echo "Aborted."
+    exit 0
+  fi
+
+  # Write to index.json — pass entries via env var (avoids pipe+heredoc stdin conflict)
+  _entries_str=$(printf '%s\n' "${_entries[@]}")
+
+  INDEX_PATH="$INDEX_PATH" ENTRIES_STR="$_entries_str" \
+  $PYTHON3 - <<'PYEOF'
+import os, json
+from pathlib import Path
+
+index_path  = Path(os.environ['INDEX_PATH'])
+entries_raw = os.environ['ENTRIES_STR'].strip()
+
+new_entries = []
+for line in entries_raw.split('\n'):
+    line = line.strip()
+    if not line:
+        continue
+    slug, goal, priority = line.split('|')
+    new_entries.append({'slug': slug, 'goal': goal, 'priority': int(priority)})
+
+index = {'features': []}
+if index_path.exists():
+    with open(index_path) as f:
+        index = json.load(f)
+
+for e in new_entries:
+    index['features'].append({
+        'slug':       e['slug'],
+        'priority':   e['priority'],
+        'goal':       e['goal'],
+        'last_run':   None,
+        'status':     'pending',
+        'last_stage': None,
+        'evidence':   None,
+    })
+
+index_path.parent.mkdir(parents=True, exist_ok=True)
+with open(index_path, 'w') as f:
+    json.dump(index, f, indent=2)
+print(f'✅ Added {len(new_entries)} feature(s) to {index_path}')
+PYEOF
+
+  echo ""
+  echo "Run 'ai loop' to start executing the backlog."
+  exit 0
 
 # -----------------------------
 # RUN MODE — autonomous pipeline
