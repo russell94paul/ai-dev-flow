@@ -1,8 +1,10 @@
 #NoEnv
 SetTitleMatchMode, 2
 
-; Wait for Claude window
-WinWait, Claude Code
+; Wait for a Claude window to become the active (focused) window.
+; WinWaitActive ensures we paste into the newly launched window,
+; not an existing one that was already open in the background.
+WinWaitActive, Claude Code
 
 ; Let UI initialize
 Sleep, 1500
@@ -18,7 +20,7 @@ Send {Enter}
 
 Sleep, 500
 
-; í´¥ CRITICAL FIX: refocus input
+; ï¿½ï¿½ï¿½ CRITICAL FIX: refocus input
 Send {Esc}
 Sleep, 300
 

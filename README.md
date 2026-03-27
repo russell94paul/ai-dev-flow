@@ -6,14 +6,29 @@ A structured AI-driven development workflow. Transforms ad-hoc prompting into a 
 
 ## Commands
 
+### `ai init`
+
+Runs an interactive manifest wizard in the terminal. Detects project capabilities (requirements.txt, Prefect, pytest, Docker) and prompts for configuration. Writes a `devflow.yaml` manifest to the branch root in your notes vault.
+
+```bash
+ai init
+# → detects capabilities, prompts for config
+# → writes <NOTES_ROOT>/<repo>/<branch>/devflow.yaml
+```
+
+See [docs/manifest.md](docs/manifest.md) for the full schema.
+
+---
+
 ### `ai feature "<idea>"`
 
-Runs the GRILL → PRD → PLAN lifecycle in Claude chat.
+Runs the GRILL → PRD → DIAGRAM → PLAN lifecycle in Claude chat.
 
 - Grills you on requirements one question at a time
 - Produces a structured PRD
+- Generates Mermaid system-context and sequence diagrams
 - Breaks the PRD into a phased implementation plan with acceptance criteria
-- Writes artifacts to `./<feature-slug>/PRD.md` and `./<feature-slug>/plan.md` in your current directory
+- Writes artifacts to the notes vault under `specs/` and `plans/`
 
 When the plan is confirmed, Claude prints:
 ```
@@ -42,6 +57,69 @@ Decomposes a project idea into structured feature stubs.
 - Asks for confirmation before writing anything
 - Writes `features/<slug>/intake/stub.md` stubs to your notes vault
 - Prints suggested `ai feature` commands in dependency order
+
+---
+
+### `ai prep <slug>`
+
+Runs bootstrap commands and starts services defined in `devflow.yaml`. Writes a prep log to `intake/prep.md` and updates `state.json`.
+
+```bash
+ai prep "sample-sync"
+# → runs env.bootstrap commands
+# → starts and health-checks services
+# → writes intake/prep.md
+```
+
+---
+
+### `ai qa <slug>`
+
+Runs all QA suites defined in `devflow.yaml`. Writes per-suite artifacts and generates `qa/evidence.md`.
+
+```bash
+ai qa "sample-sync"
+# → runs each qa.suites[].command
+# → writes qa/unit.md, qa/smoke.md etc.
+# → generates qa/evidence.md
+```
+
+---
+
+### `ai deploy <slug>`
+
+Runs deploy steps defined in `devflow.yaml`. Writes a deploy log to `build/deploy.md`.
+
+```bash
+ai deploy "sample-sync"
+# → runs deploy.steps commands
+# → writes build/deploy.md
+```
+
+---
+
+### `ai prefect-run <slug>`
+
+Starts the Prefect sandbox, runs the flow, executes assertions, and generates evidence.
+
+```bash
+ai prefect-run "sample-sync"
+# → starts prefect.sandbox_start
+# → runs prefect.run_command
+# → runs prefect.assertions[]
+# → writes qa/prefect-run.md, qa/assertions.md, qa/evidence.md
+```
+
+---
+
+### `ai state clean <slug>`
+
+Removes `state.json` for a feature slug, resetting tracked command history.
+
+```bash
+ai state clean "sample-sync"
+# → removes <branch-root>/features/sample-sync/state.json
+```
 
 ---
 
@@ -93,20 +171,29 @@ All commands write into the same vault hierarchy, organized by repo and branch s
 
 ```
 <NOTES_ROOT>/
-  <repo-name>/
-    <branch-name>/
+  <repo>/
+    <branch>/
+      devflow.yaml           ← written by ai init
       features/
-        <feature-slug>/
+        <slug>/
           intake/
-            stub.md        ← written by `ai new-project`
-          discovery/       ← reserved for future discovery skills
+            stub.md          ← ai new-project
+            prep.md          ← ai prep
           specs/
-            prd.md         ← written by `ai feature` (PRD phase)
+            prd.md           ← ai feature
+            diagram.md       ← ai feature (DIAGRAM phase)
           plans/
-            plan.md        ← written by `ai feature` (PLAN phase)
+            plan.md          ← ai feature
           build/
-            tdd-summary.md ← written by `ai tdd` on completion
-          qa/              ← reserved for future QA skills
+            tdd-summary.md   ← ai tdd
+            deploy.md        ← ai deploy
+          qa/
+            unit.md          ← ai qa
+            smoke.md         ← ai qa
+            prefect-run.md   ← ai prefect-run
+            assertions.md    ← ai prefect-run
+            evidence.md      ← ai qa / ai prefect-run
+          state.json         ← maintained by all commands
 ```
 
 `ai new-project` seeds the `intake/stub.md` for each feature it produces. Running `ai feature "<slug>"` on any of those slugs then fills in the remaining subfolders alongside it.
@@ -127,9 +214,36 @@ Documents\ai-dev-flow\
 
 ---
 
+## Manifest
+
+`devflow.yaml` captures the project tooling config for a repo + branch. Run `ai init` once per project to create it.
+
+```yaml
+env:
+  venv: .venv
+  bootstrap:
+    - pip install -r requirements.txt
+qa:
+  suites:
+    - name: Unit
+      command: pytest tests/unit
+      artifact: features/%slug%/qa/unit.md
+prefect:
+  sandbox_start: docker compose -f scripts/prefect-sandbox.yml up -d
+  run_command: python flows/sync_flow.py
+  assertions:
+    - name: rows_emitted
+      command: python scripts/assert_rows.py --min 10
+      artifact: features/%slug%/qa/assertions.md
+```
+
+The `%slug%` placeholder in artifact paths is replaced at runtime with the feature slug. Full schema: [docs/manifest.md](docs/manifest.md).
+
+---
+
 ## How it works
 
-Chat-based phases (GRILL/PRD/PLAN) run in the Claude GUI where you have a conversation. The `ai` script assembles the right skill prompts, copies them to the clipboard, opens Claude, and pastes automatically via AutoHotkey.
+Chat-based phases (GRILL → PRD → DIAGRAM → PLAN) run in the Claude GUI where you have a conversation. The `ai` script assembles the right skill prompts, copies them to the clipboard, opens Claude, and pastes automatically via AutoHotkey.
 
 The TDD phase runs in the Claude Code CLI (`ai tdd`) so shell commands and file edits execute in your terminal with full tool access.
 

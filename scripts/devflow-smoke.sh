@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # devflow-smoke.sh
 # Prepares a throwaway workspace at /tmp/devflow-smoke so you can exercise
-# ai-dev-flow commands without touching a real project.
-# Safe to run repeatedly — it refreshes the workspace each time.
+# all ai-dev-flow commands without touching a real project.
+# Safe to run repeatedly — refreshes the workspace each time.
 
 set -euo pipefail
 
 SMOKE_DIR="/tmp/devflow-smoke"
+NOTES_DIR="/tmp/devflow-notes"
 SANDBOX_SRC="$(cd "$(dirname "$0")/.." && pwd)/sandbox/sample-app"
 
 # -----------------------------
@@ -14,94 +15,144 @@ SANDBOX_SRC="$(cd "$(dirname "$0")/.." && pwd)/sandbox/sample-app"
 # -----------------------------
 if [[ ! -d "$SANDBOX_SRC" ]]; then
   echo "❌ Sandbox not found at: $SANDBOX_SRC"
-  echo "   Make sure you're running this from the ai-dev-flow repo."
+  echo "   Make sure you're running from outside the smoke directory."
   exit 1
 fi
 
 # -----------------------------
 # Refresh smoke workspace
+# On Windows the directory itself may be locked (Device or resource busy)
+# so we wipe the contents rather than the directory.
 # -----------------------------
 echo "🧹 Refreshing $SMOKE_DIR ..."
-rm -rf "$SMOKE_DIR"
-cp -r "$SANDBOX_SRC" "$SMOKE_DIR"
+if rm -rf "$SMOKE_DIR" 2>/dev/null; then
+  mkdir -p "$SMOKE_DIR"
+else
+  # Directory is locked — clear contents instead
+  find "$SMOKE_DIR" -mindepth 1 -delete 2>/dev/null || true
+fi
+
+cp -r "$SANDBOX_SRC"/. "$SMOKE_DIR"/
+
+# Initialise a git repo so branch/slug detection works
+cd "$SMOKE_DIR"
+git init -q
+git add -A
+git commit -q --allow-empty -m "smoke: initial commit"
 
 echo "✅ Workspace ready at $SMOKE_DIR"
 echo ""
 
 # -----------------------------
+# Clean previous notes output
+# -----------------------------
+rm -rf "$NOTES_DIR"
+echo "🗑️  Cleared previous notes at $NOTES_DIR"
+echo ""
+
+# -----------------------------
 # Print test instructions
 # -----------------------------
-cat <<'INSTRUCTIONS'
+cat <<INSTRUCTIONS
 ========================================
  ai-dev-flow smoke test — manual steps
 ========================================
 
-Notes root for this smoke test:
-  /tmp/devflow-notes
+Workspace:   $SMOKE_DIR
+Notes vault: $NOTES_DIR  (set via AI_DEV_FLOW_NOTES_ROOT)
 
-Artifacts land at:
-  /tmp/devflow-notes/devflow-smoke/detached/features/<slug>/
+Run this once to point artifacts at the smoke notes dir:
 
-1. Set notes root and cd into the workspace:
+     export AI_DEV_FLOW_NOTES_ROOT=$NOTES_DIR
+     cd $SMOKE_DIR
 
-     export AI_DEV_FLOW_NOTES_ROOT=/tmp/devflow-notes
-     cd /tmp/devflow-smoke
+--- Manifest & Prep ---
 
-2. Test: feature workflow (GRILL / PRD / PLAN)
+1. Create the project manifest (interactive wizard):
+
+     ai init
+
+   Expected: prompts detect requirements.txt + pytest + Prefect,
+   writes $NOTES_DIR/devflow-smoke/main/devflow.yaml
+
+2. Bootstrap the environment:
+
+     ai prep "sample-sync"
+
+   Expected: runs pip install, writes intake/prep.md, updates state.json
+
+--- Feature Workflow ---
+
+3. Run the feature lifecycle (GRILL → PRD → DIAGRAM → PLAN):
 
      ai feature "sample sync"
 
-   Expected outcomes:
-   - Claude GUI opens with the GRILL/PRD/PLAN prompt
-   - After PLAN phase, Claude writes:
-       /tmp/devflow-notes/devflow-smoke/<branch>/features/sample-sync/specs/prd.md
-       /tmp/devflow-notes/devflow-smoke/<branch>/features/sample-sync/plans/plan.md
-   - Claude prints: PLAN COMPLETE. To begin TDD run: ai tdd "sample-sync"
+   Expected: Claude GUI opens, guides through 4 phases, writes:
+     $NOTES_DIR/devflow-smoke/main/features/sample-sync/specs/prd.md
+     $NOTES_DIR/devflow-smoke/main/features/sample-sync/specs/diagram.md
+     $NOTES_DIR/devflow-smoke/main/features/sample-sync/plans/plan.md
+   Prints: PLAN COMPLETE. To begin TDD run: ai tdd "sample-sync"
 
-3. Test: TDD handoff (requires plan.md from step 2)
+4. TDD handoff (requires plan.md from step 3):
 
      ai tdd "sample-sync"
 
-   Expected outcomes:
-   - Prompt written to /tmp/devflow-tdd-sample-sync.md
-   - @/tmp/devflow-tdd-sample-sync.md copied to clipboard
-   - A new Claude Code window opens (outside VS Code)
-   - AutoHotkey pastes the @file message automatically after ~6 s
-   - Claude Code loads guardrails + TDD skill + plan and begins TDD
-   - On completion, summary written to:
-       /tmp/devflow-notes/devflow-smoke/<branch>/features/sample-sync/build/tdd-summary.md
+   Expected: new Claude Code window opens with guardrails + TDD + plan,
+   writes $NOTES_DIR/devflow-smoke/main/features/sample-sync/build/tdd-summary.md
 
-   Fallback (if AHK misses):
-   - The original terminal prints the prompt path
-   - Paste manually in Claude Code: @/tmp/devflow-tdd-sample-sync.md
+--- QA, Prefect & Deploy ---
 
-   If plan.md is missing, you see:
-       ❌ No plan found at: /tmp/devflow-notes/devflow-smoke/<branch>/features/sample-sync/plans/plan.md
+5. Run QA suites:
 
-   To test the error path before running step 2:
-     ai tdd "no-such-feature"
+     ai qa "sample-sync"
 
-4. Test: new-project workflow
+   Expected: runs pytest tests/unit, writes qa/unit.md, generates qa/evidence.md
+
+6. Run Prefect flow:
+
+     ai prefect-run "sample-sync"
+
+   Expected: starts prefect sandbox (Docker), runs prefect.run_command,
+   executes assertions, writes:
+     $NOTES_DIR/devflow-smoke/main/features/sample-sync/qa/prefect-run.md
+     $NOTES_DIR/devflow-smoke/main/features/sample-sync/qa/assertions.md
+   Refreshes qa/evidence.md with updated Prefect run status
+
+7. Run deploy steps:
+
+     ai deploy "sample-sync"
+
+   Expected: runs deploy.steps from manifest, writes build/deploy.md
+
+--- New Project ---
+
+8. Decompose a new project idea:
 
      ai new-project "Sample AI app"
 
-   Expected outcomes:
-   - Claude GUI opens with the new-project scoping skill
-   - After confirmation, Claude writes feature stubs to:
-       /tmp/devflow-smoke/features/<slug>.md
+   Expected: Claude GUI opens, writes:
+     $NOTES_DIR/devflow-smoke/main/features/<slug>/intake/stub.md
 
-5. Test: single-skill dispatch
+--- State ---
 
-     ai grill-me "review my sync design"
+9. Inspect state:
 
-   Expected: Claude GUI opens with the grill-me skill and your context.
+     cat $NOTES_DIR/devflow-smoke/main/features/sample-sync/state.json
+
+10. Reset state for a feature:
+
+     ai state clean "sample-sync"
+
+   Expected: removes state.json
 
 ========================================
  Cleanup
 ========================================
 
-When done, the workspace is throwaway:
+When done:
 
-     rm -rf /tmp/devflow-smoke
+     rm -rf $NOTES_DIR
+
+(The workspace at $SMOKE_DIR is reused across runs — just re-run this script to reset it.)
 
 INSTRUCTIONS
