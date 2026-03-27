@@ -123,6 +123,59 @@ ai state clean "sample-sync"
 
 ---
 
+### `ai run <slug>`
+
+Runs the full feature pipeline automatically, skipping stages already recorded as complete in `state.json`.
+
+Stage order: `prep` → `feature` → `tdd` → `qa` → `prefect` → `deploy`
+
+**Note:** `feature` and `tdd` still require human interaction (Claude GUI/CLI). `ai run` launches them and pauses until you re-run after completion.
+
+```bash
+ai run "sample-sync"
+
+# Flags
+ai run "sample-sync" --from qa               # start at qa, skip earlier stages
+ai run "sample-sync" --to deploy             # stop after deploy
+ai run "sample-sync" --skip-tdd              # skip TDD stage entirely
+ai run "sample-sync" --skip-qa               # skip QA
+ai run "sample-sync" --skip-prefect          # skip Prefect run
+ai run "sample-sync" --skip-deploy           # skip deploy
+
+# Combine flags
+ai run "sample-sync" --skip-tdd --skip-qa --skip-prefect --skip-deploy
+# → runs prep + feature only
+```
+
+Writes a stage log to `features/<slug>/ops/run-log.md`.
+
+---
+
+### `ai loop`
+
+Iterates over the feature backlog (`features/index.json`) in priority order and calls `ai run` for each feature.
+
+```bash
+ai loop                          # run all features to their configured goal
+ai loop --goal qa                # only run features up to the qa stage
+ai loop --limit 3                # process at most 3 features per run
+ai loop --goal prep --limit 1    # prep one feature from the backlog
+ai loop --skip-qa                # forward --skip-qa to every ai run call
+ai loop --stop-on-fail           # abort the loop on the first failure
+```
+
+After each feature run, `features/index.json` is updated with:
+- `last_run` — ISO 8601 timestamp
+- `status` — `pass`, `fail`, or `pending`
+- `last_stage` — last stage completed
+- `evidence` — path to `qa/evidence.md` if present
+
+Prints a summary table at the end.
+
+See [docs/manifest.md](docs/manifest.md) for the `features/index.json` schema.
+
+---
+
 ### `ai <skill-name>`
 
 Dispatches a single skill from `skills/` into Claude chat.
@@ -174,7 +227,9 @@ All commands write into the same vault hierarchy, organized by repo and branch s
   <repo>/
     <branch>/
       devflow.yaml           ← written by ai init
+      devflow.md             ← human-readable companion (Obsidian)
       features/
+        index.json           ← backlog for ai loop
         <slug>/
           intake/
             stub.md          ← ai new-project
@@ -193,6 +248,8 @@ All commands write into the same vault hierarchy, organized by repo and branch s
             prefect-run.md   ← ai prefect-run
             assertions.md    ← ai prefect-run
             evidence.md      ← ai qa / ai prefect-run
+          ops/
+            run-log.md       ← ai run
           state.json         ← maintained by all commands
 ```
 

@@ -110,3 +110,100 @@ prefect:
       command: python scripts/assert_rows.py --min 10
       artifact: features/%slug%/qa/assertions.md
 ```
+
+---
+
+## `features/index.json` — Backlog schema
+
+Lives at `<NOTES_ROOT>/<repo>/<branch>/features/index.json`. Consumed by `ai loop`.
+
+```json
+{
+  "features": [
+    {
+      "slug": "sample-sync",
+      "priority": 1,
+      "goal": "deploy",
+      "last_run": null,
+      "status": "pending",
+      "last_stage": null,
+      "evidence": null
+    },
+    {
+      "slug": "sample-report",
+      "priority": 2,
+      "goal": "qa",
+      "last_run": null,
+      "status": "pending",
+      "last_stage": null,
+      "evidence": null
+    }
+  ]
+}
+```
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `slug` | string | Feature slug — must match the directory name under `features/` |
+| `priority` | integer | Execution order; lower runs first. Ties sorted alphabetically by slug. |
+| `goal` | string | Furthest stage to attempt: `prep`, `feature`, `tdd`, `qa`, `prefect`, `deploy` |
+| `last_run` | string \| null | ISO 8601 timestamp of the last `ai loop` run — written by `ai loop` |
+| `status` | string | `pending`, `pass`, or `fail` — written by `ai loop` |
+| `last_stage` | string \| null | Last stage completed — written by `ai loop` |
+| `evidence` | string \| null | Path to `qa/evidence.md` if present — written by `ai loop` |
+
+### Stage order (for `goal` and `ai run --to`)
+
+`prep` → `feature` → `tdd` → `qa` → `prefect` → `deploy`
+
+---
+
+## `ai run` — Stage pipeline
+
+`ai run <slug>` runs stages sequentially. Each stage maps to an existing CLI mode:
+
+| Stage | CLI mode | Completion signal |
+|-------|----------|-------------------|
+| `prep` | `ai prep` | `'prep' in state.completed` |
+| `feature` | `ai feature` | `plans/plan.md` exists |
+| `tdd` | `ai tdd` | `build/tdd-summary.md` exists |
+| `qa` | `ai qa` | `state.qa.unit == 'pass'` |
+| `prefect` | `ai prefect-run` | `state.qa['prefect-run'] == 'pass'` |
+| `deploy` | `ai deploy` | `state.deploy.status == 'success'` |
+
+Already-complete stages are skipped. Interactive stages (`feature`, `tdd`) launch the Claude GUI/CLI and pause — re-run `ai run` after the session to continue.
+
+Writes `features/<slug>/ops/run-log.md` summarising stage statuses and timestamps.
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--from <stage>` | Start at this stage (skip all earlier) |
+| `--to <stage>` | Stop after this stage |
+| `--skip-tdd` | Skip the `tdd` stage entirely |
+| `--skip-qa` | Skip the `qa` stage entirely |
+| `--skip-prefect` | Skip the `prefect` stage entirely |
+| `--skip-deploy` | Skip the `deploy` stage entirely |
+
+---
+
+## `ai loop` — Backlog automation
+
+Loads `features/index.json`, filters by `--goal`, sorts by priority, and calls `ai run <slug> --to <goal>` for each entry. After each run, updates `index.json` with `last_run`, `status`, `last_stage`, and `evidence`.
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--goal <stage>` | Only run features whose `goal ≥ stage`; also sets `--to <stage>` for each run (default: `deploy`) |
+| `--limit N` | Process at most N features per invocation |
+| `--stop-on-fail` | Abort the loop on the first failing feature |
+| `--skip-tdd` | Forwarded to every `ai run` call |
+| `--skip-qa` | Forwarded to every `ai run` call |
+| `--skip-prefect` | Forwarded to every `ai run` call |
+| `--skip-deploy` | Forwarded to every `ai run` call |
+
+**Human-approval note:** `ai run` (and therefore `ai loop`) still requires human interaction for `feature` (Claude GUI) and `tdd` (Claude Code CLI) stages. Everything else — `prep`, `qa`, `prefect`, `deploy` — runs fully automatically.

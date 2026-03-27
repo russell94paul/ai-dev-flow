@@ -11,6 +11,9 @@ if [[ -f "$CONFIG_LOCAL" ]]; then
   # shellcheck source=/dev/null
   source "$CONFIG_LOCAL"
 fi
+
+# Force UTF-8 in all Python subprocesses (prevents cp1252 emoji failures on Windows)
+export PYTHONUTF8=1
 AHK_SCRIPT="C:\\Users\\PaulRussell\\ai-dev-flow\\claude_paste.ahk"
 CLAUDE_CMD="C:\\Users\\PaulRussell\\AppData\\Roaming\\npm\\claude.cmd"
 
@@ -233,6 +236,66 @@ PYEOF
 }
 
 # -----------------------------
+# State helpers
+# -----------------------------
+
+# stage_done <feature_notes_dir> <stage>
+# Returns 0 if the stage is already complete, 1 otherwise.
+# Requires PYTHON3 to be set (call require_python first).
+stage_done() {
+  local fnd="$1" stage="$2"
+  case "$stage" in
+    prep)
+      STATE_PATH_SD="$fnd/state.json" $PYTHON3 - <<'PYEOF'
+import os, json, sys
+sp = os.environ['STATE_PATH_SD']
+if not os.path.exists(sp):
+    sys.exit(1)
+with open(sp) as f:
+    s = json.load(f)
+sys.exit(0 if 'prep' in s.get('completed', []) else 1)
+PYEOF
+      ;;
+    feature) [[ -f "$fnd/plans/plan.md" ]] ;;
+    tdd)     [[ -f "$fnd/build/tdd-summary.md" ]] ;;
+    qa)
+      STATE_PATH_SD="$fnd/state.json" $PYTHON3 - <<'PYEOF'
+import os, json, sys
+sp = os.environ['STATE_PATH_SD']
+if not os.path.exists(sp):
+    sys.exit(1)
+with open(sp) as f:
+    s = json.load(f)
+sys.exit(0 if s.get('qa', {}).get('unit') == 'pass' else 1)
+PYEOF
+      ;;
+    prefect)
+      STATE_PATH_SD="$fnd/state.json" $PYTHON3 - <<'PYEOF'
+import os, json, sys
+sp = os.environ['STATE_PATH_SD']
+if not os.path.exists(sp):
+    sys.exit(1)
+with open(sp) as f:
+    s = json.load(f)
+sys.exit(0 if s.get('qa', {}).get('prefect-run') == 'pass' else 1)
+PYEOF
+      ;;
+    deploy)
+      STATE_PATH_SD="$fnd/state.json" $PYTHON3 - <<'PYEOF'
+import os, json, sys
+sp = os.environ['STATE_PATH_SD']
+if not os.path.exists(sp):
+    sys.exit(1)
+with open(sp) as f:
+    s = json.load(f)
+sys.exit(0 if s.get('deploy', {}).get('status') == 'success' else 1)
+PYEOF
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# -----------------------------
 # Mode detection
 # -----------------------------
 if [[ "$QUERY" == "feature" ]]; then
@@ -253,6 +316,10 @@ elif [[ "$QUERY" == "prefect-run" ]]; then
   MODE="prefect-run"
 elif [[ "$QUERY" == "state" ]]; then
   MODE="state"
+elif [[ "$QUERY" == "run" ]]; then
+  MODE="run"
+elif [[ "$QUERY" == "loop" ]]; then
+  MODE="loop"
 else
   MODE="single"
 fi
@@ -1283,6 +1350,336 @@ PYEOF
 
   generate_evidence "$FEATURE_SLUG"
   exit $_prefect_exit
+
+# -----------------------------
+# RUN MODE — autonomous pipeline
+# -----------------------------
+elif [[ "$MODE" == "run" ]]; then
+
+  # Usage: ai run <slug> [--from <stage>] [--to <stage>]
+  #                      [--skip-tdd] [--skip-qa] [--skip-prefect] [--skip-deploy]
+  _run_args=()
+  if [[ -n "$CONTEXT" ]]; then
+    read -ra _run_args <<< "$CONTEXT"
+  fi
+  FEATURE_SLUG=$(make_slug "${_run_args[0]:-}")
+  if [[ -z "$FEATURE_SLUG" ]]; then
+    echo "❌ Usage: ai run <slug> [--from <stage>] [--to <stage>] [--skip-tdd] [--skip-qa] [--skip-prefect] [--skip-deploy]"
+    exit 1
+  fi
+
+  _from_stage=""
+  _to_stage=""
+  _skip_tdd=false
+  _skip_qa=false
+  _skip_prefect=false
+  _skip_deploy=false
+
+  _i=1
+  while [[ $_i -lt ${#_run_args[@]} ]]; do
+    case "${_run_args[$_i]:-}" in
+      --from)         _i=$(( _i + 1 )); _from_stage="${_run_args[$_i]:-}" ;;
+      --to)           _i=$(( _i + 1 )); _to_stage="${_run_args[$_i]:-}" ;;
+      --skip-tdd)     _skip_tdd=true ;;
+      --skip-qa)      _skip_qa=true ;;
+      --skip-prefect) _skip_prefect=true ;;
+      --skip-deploy)  _skip_deploy=true ;;
+    esac
+    _i=$(( _i + 1 ))
+  done
+
+  require_python
+  resolve_branch_root
+  require_manifest
+  resolve_feature_notes_dir "$FEATURE_SLUG"
+
+  _ALL_STAGES=(prep feature tdd qa prefect deploy)
+  OPS_DIR="$FEATURE_NOTES_DIR/ops"
+  mkdir -p "$OPS_DIR"
+  RUN_LOG="$OPS_DIR/run-log.md"
+
+  # Build the active stage list, respecting --from and --to
+  _active=false
+  _run_stages=()
+  for _s in "${_ALL_STAGES[@]}"; do
+    if [[ -z "$_from_stage" || "$_s" == "$_from_stage" ]]; then
+      _active=true
+    fi
+    if [[ "$_active" == true ]]; then
+      _run_stages+=("$_s")
+    fi
+    if [[ -n "$_to_stage" && "$_s" == "$_to_stage" ]]; then
+      break
+    fi
+  done
+
+  echo ""
+  echo "🚀 ai run: $FEATURE_SLUG"
+  echo "   Stages:  ${_run_stages[*]}"
+  echo ""
+
+  _run_start=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  _log_rows=()
+  _overall_status="pass"
+  _last_stage=""
+
+  for _stage in "${_run_stages[@]}"; do
+    # Apply skip flags
+    _skipped=false
+    if [[ "$_stage" == "tdd"     && "$_skip_tdd" == true ]];     then _skipped=true; fi
+    if [[ "$_stage" == "qa"      && "$_skip_qa" == true ]];      then _skipped=true; fi
+    if [[ "$_stage" == "prefect" && "$_skip_prefect" == true ]]; then _skipped=true; fi
+    if [[ "$_stage" == "deploy"  && "$_skip_deploy" == true ]];  then _skipped=true; fi
+
+    if [[ "$_skipped" == true ]]; then
+      echo "  ⏭️  [$_stage] skipped"
+      _log_rows+=("$_stage|skipped|—")
+      continue
+    fi
+
+    # Check if already complete
+    if stage_done "$FEATURE_NOTES_DIR" "$_stage"; then
+      echo "  ✅ [$_stage] already complete — skipping"
+      _log_rows+=("$_stage|already-done|—")
+      _last_stage="$_stage"
+      continue
+    fi
+
+    # Map stage → subcommand
+    case "$_stage" in
+      prep)    _subcmd="prep" ;;
+      feature) _subcmd="feature" ;;
+      tdd)     _subcmd="tdd" ;;
+      qa)      _subcmd="qa" ;;
+      prefect) _subcmd="prefect-run" ;;
+      deploy)  _subcmd="deploy" ;;
+    esac
+
+    # Interactive stages: launch and pause (Claude GUI — requires human)
+    if [[ "$_stage" == "feature" || "$_stage" == "tdd" ]]; then
+      echo "  🤖 [$_stage] launching Claude session — human interaction required"
+      "$0" "$_subcmd" "$FEATURE_SLUG" || true
+      _log_rows+=("$_stage|launched (human required)|$(date -u +"%Y-%m-%dT%H:%M:%SZ")")
+      _last_stage="$_stage"
+      _overall_status="pending"
+      echo ""
+      echo "⏸️  Paused at [$_stage] — re-run 'ai run $FEATURE_SLUG' after completing the Claude session."
+      break
+    fi
+
+    # Automated stages
+    echo "  ▶️  [$_stage] running..."
+    _stage_exit=0
+    "$0" "$_subcmd" "$FEATURE_SLUG" || _stage_exit=$?
+    _stage_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    if [[ $_stage_exit -eq 0 ]]; then
+      echo "  ✅ [$_stage] passed"
+      _log_rows+=("$_stage|pass|$_stage_ts")
+      _last_stage="$_stage"
+    else
+      echo "  ❌ [$_stage] FAILED (exit $_stage_exit)"
+      _log_rows+=("$_stage|fail|$_stage_ts")
+      _last_stage="$_stage"
+      _overall_status="fail"
+      echo ""
+      echo "🛑 Stopped at [$_stage] — fix the failure and re-run."
+      break
+    fi
+  done
+
+  # Write run-log.md
+  _run_end=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  {
+    echo "# Run Log: $FEATURE_SLUG"
+    echo ""
+    echo "**Started:** $_run_start"
+    echo "**Finished:** $_run_end"
+    echo "**Status:** $_overall_status"
+    echo "**Last stage:** ${_last_stage:-—}"
+    echo ""
+    echo "## Stages"
+    echo ""
+    echo "| Stage | Status | Timestamp |"
+    echo "|-------|--------|-----------|"
+    for _row in "${_log_rows[@]}"; do
+      IFS='|' read -r _rs _rstat _rts <<< "$_row"
+      echo "| $_rs | $_rstat | $_rts |"
+    done
+  } > "$RUN_LOG"
+
+  echo ""
+  echo "📄 Run log: $RUN_LOG"
+  echo "   Status:  $_overall_status"
+
+  if [[ "$_overall_status" == "fail" ]]; then
+    exit 1
+  fi
+  exit 0
+
+# -----------------------------
+# LOOP MODE — backlog runner
+# -----------------------------
+elif [[ "$MODE" == "loop" ]]; then
+
+  # Usage: ai loop [--goal <stage>] [--limit N] [--stop-on-fail]
+  #               [--skip-tdd] [--skip-qa] [--skip-prefect] [--skip-deploy]
+  _loop_args=()
+  if [[ -n "$CONTEXT" ]]; then
+    read -ra _loop_args <<< "$CONTEXT"
+  fi
+
+  _goal_stage="deploy"
+  _limit=0
+  _stop_on_fail=false
+  _loop_pass_flags=()
+
+  _i=0
+  while [[ $_i -lt ${#_loop_args[@]} ]]; do
+    case "${_loop_args[$_i]:-}" in
+      --goal)         _i=$(( _i + 1 )); _goal_stage="${_loop_args[$_i]:-deploy}" ;;
+      --limit)        _i=$(( _i + 1 )); _limit="${_loop_args[$_i]:-0}" ;;
+      --stop-on-fail) _stop_on_fail=true ;;
+      --skip-tdd)     _loop_pass_flags+=("--skip-tdd") ;;
+      --skip-qa)      _loop_pass_flags+=("--skip-qa") ;;
+      --skip-prefect) _loop_pass_flags+=("--skip-prefect") ;;
+      --skip-deploy)  _loop_pass_flags+=("--skip-deploy") ;;
+    esac
+    _i=$(( _i + 1 ))
+  done
+
+  require_python
+  resolve_branch_root
+
+  INDEX_PATH="$BRANCH_ROOT_POSIX/features/index.json"
+
+  if [[ ! -f "$INDEX_PATH" ]]; then
+    echo "❌ No index found at: $INDEX_PATH"
+    echo "   Create features/index.json in your branch root — see docs/manifest.md for the schema."
+    exit 1
+  fi
+
+  # Resolve ordered slug list via Python
+  _slugs=$(INDEX_PATH="$INDEX_PATH" GOAL_STAGE="$_goal_stage" LIMIT="$_limit" \
+  $PYTHON3 - <<'PYEOF'
+import os, json
+from pathlib import Path
+
+STAGE_ORDER = ['prep', 'feature', 'tdd', 'qa', 'prefect', 'deploy']
+
+index_path = Path(os.environ['INDEX_PATH'])
+goal_stage = os.environ['GOAL_STAGE']
+limit = int(os.environ['LIMIT'])
+
+with open(index_path) as f:
+    index = json.load(f)
+
+def goal_rank(g):
+    try:
+        return STAGE_ORDER.index(g)
+    except ValueError:
+        return -1
+
+goal_idx = goal_rank(goal_stage)
+features = [f for f in index.get('features', [])
+            if goal_rank(f.get('goal', 'deploy')) >= goal_idx]
+features.sort(key=lambda f: (f.get('priority', 99), f.get('slug', '')))
+if limit > 0:
+    features = features[:limit]
+for f in features:
+    print(f.get('slug', ''))
+PYEOF
+)
+
+  echo ""
+  echo "🔁 ai loop — goal: $_goal_stage  limit: ${_limit:-∞}"
+  echo ""
+
+  _loop_summary=()
+
+  while IFS= read -r _slug; do
+    [[ -z "$_slug" ]] && continue
+    echo "━━━ Feature: $_slug ━━━"
+
+    _run_exit=0
+    "$0" run "$_slug" "--to" "$_goal_stage" "${_loop_pass_flags[@]}" || _run_exit=$?
+    _run_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    _run_status=$( [[ $_run_exit -eq 0 ]] && echo "pass" || echo "fail" )
+
+    # Read last stage from run-log
+    _fnd="$BRANCH_ROOT_POSIX/features/$_slug"
+    _run_log_file="$_fnd/ops/run-log.md"
+    _last_completed="—"
+    if [[ -f "$_run_log_file" ]]; then
+      _raw=$(grep "^\*\*Last stage:\*\*" "$_run_log_file" | head -1 \
+             | sed 's/\*\*Last stage:\*\* //' || true)
+      if [[ -n "$_raw" && "$_raw" != "—" ]]; then
+        _last_completed="$_raw"
+      fi
+    fi
+
+    # Evidence path
+    _evidence_ref=""
+    if [[ -f "$_fnd/qa/evidence.md" ]]; then
+      _evidence_ref="$_fnd/qa/evidence.md"
+    fi
+
+    # Update index.json entry
+    INDEX_PATH="$INDEX_PATH" \
+    SLUG="$_slug" \
+    RUN_TS="$_run_ts" \
+    RUN_STATUS="$_run_status" \
+    LAST_STAGE="$_last_completed" \
+    EVIDENCE_PATH="$_evidence_ref" \
+    $PYTHON3 - <<'PYEOF'
+import os, json
+from pathlib import Path
+
+index_path = Path(os.environ['INDEX_PATH'])
+slug        = os.environ['SLUG']
+run_ts      = os.environ['RUN_TS']
+run_status  = os.environ['RUN_STATUS']
+last_stage  = os.environ['LAST_STAGE']
+evidence_path = os.environ['EVIDENCE_PATH']
+
+with open(index_path) as f:
+    index = json.load(f)
+for feat in index.get('features', []):
+    if feat.get('slug') == slug:
+        feat['last_run'] = run_ts
+        feat['status']   = run_status
+        if last_stage and last_stage != '—':
+            feat['last_stage'] = last_stage
+        if evidence_path:
+            feat['evidence'] = evidence_path
+        break
+with open(index_path, 'w') as f:
+    json.dump(index, f, indent=2)
+PYEOF
+
+    _loop_summary+=("$_slug|$_run_status|$_last_completed|$_run_ts")
+
+    if [[ "$_stop_on_fail" == true && "$_run_status" == "fail" ]]; then
+      echo ""
+      echo "🛑 --stop-on-fail: stopping after failure in '$_slug'"
+      break
+    fi
+    echo ""
+  done <<< "$_slugs"
+
+  # Summary table
+  echo "════════════════════════════════════════"
+  echo " Loop Summary"
+  echo "════════════════════════════════════════"
+  echo ""
+  printf "%-22s %-8s %-14s %s\n" "Feature" "Status" "Last Stage" "Timestamp"
+  printf "%-22s %-8s %-14s %s\n" "-------" "------" "----------" "---------"
+  for _row in "${_loop_summary[@]}"; do
+    IFS='|' read -r _fs _fstat _fls _fts <<< "$_row"
+    printf "%-22s %-8s %-14s %s\n" "$_fs" "$_fstat" "$_fls" "$_fts"
+  done
+  echo ""
+  exit 0
 
 # -----------------------------
 # STATE MODE (runs in terminal)
