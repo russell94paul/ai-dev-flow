@@ -791,12 +791,22 @@ elif [[ "$MODE" == "init" ]]; then
 
   _default_prefect_sandbox=""
   if [[ "$_has_prefect" == true ]] || [[ "$_has_docker" == true ]]; then
-    _default_prefect_sandbox="docker compose -f scripts/prefect-sandbox.yml up -d"
+    if [[ -f "$CALLER_DIR/prefect.toml" ]] && grep -qE 'api\.url\s*=\s*"http://(127\.0\.0\.1|localhost)' "$CALLER_DIR/prefect.toml" 2>/dev/null; then
+      _default_prefect_sandbox="prefect server start"
+    elif [[ -f "$CALLER_DIR/scripts/prefect-sandbox.yml" ]]; then
+      _default_prefect_sandbox="docker compose -f scripts/prefect-sandbox.yml up -d"
+    else
+      _default_prefect_sandbox="prefect server start"
+    fi
+    echo "  [auto-detected] Prefect sandbox: $_default_prefect_sandbox"
   fi
   read -r -p "Prefect sandbox start command [${_default_prefect_sandbox}]: " _prefect_sandbox
   _prefect_sandbox="${_prefect_sandbox:-$_default_prefect_sandbox}"
-
-  read -r -p "Prefect run command (optional): " _prefect_run
+  echo ""
+  echo "  ℹ️  Flow selection happens automatically at run time."
+  echo "     ai prefect-run detects new/modified flows on this branch,"
+  echo "     or shows a list to choose from if none are found."
+  echo ""
 
   # Write manifest via python3
   VENV="$_venv" \
@@ -808,7 +818,6 @@ elif [[ "$MODE" == "init" ]]; then
   QA_SMOKE="$_qa_smoke" \
   DEPLOY_RAW="$_deploy_raw" \
   PREFECT_SANDBOX="$_prefect_sandbox" \
-  PREFECT_RUN="$_prefect_run" \
   MANIFEST_PATH="$MANIFEST_PATH" \
   $PYTHON3 - <<'PYEOF'
 import os, yaml
@@ -823,7 +832,6 @@ qa_unit      = os.environ['QA_UNIT']
 qa_smoke     = os.environ['QA_SMOKE']
 deploy_raw   = os.environ['DEPLOY_RAW']
 prefect_sandbox = os.environ['PREFECT_SANDBOX']
-prefect_run  = os.environ['PREFECT_RUN']
 manifest_path = Path(os.environ['MANIFEST_PATH'])
 
 def split_cmds(raw):
@@ -857,20 +865,17 @@ if deploy_raw:
     manifest['deploy'] = {'steps': split_cmds(deploy_raw)}
 
 # prefect
-if prefect_sandbox or prefect_run:
-    prefect_block = {}
-    if prefect_sandbox:
-        prefect_block['sandbox_start'] = prefect_sandbox
-    if prefect_run:
-        prefect_block['run_command'] = prefect_run
-    prefect_block['assertions'] = [
-        {
-            'name': 'rows_emitted',
-            'command': 'python scripts/assert_rows.py --min 10',
-            'artifact': 'features/%slug%/qa/assertions.md',
-        }
-    ]
-    manifest['prefect'] = prefect_block
+if prefect_sandbox:
+    manifest['prefect'] = {
+        'sandbox_start': prefect_sandbox,
+        'assertions': [
+            {
+                'name': 'rows_emitted',
+                'command': 'python scripts/assert_rows.py --min 10',
+                'artifact': 'features/%slug%/qa/assertions.md',
+            }
+        ],
+    }
 
 manifest_path.parent.mkdir(parents=True, exist_ok=True)
 with open(manifest_path, 'w') as f:
@@ -919,8 +924,7 @@ if prefect:
     lines += ["", "## Prefect", ""]
     if prefect.get('sandbox_start'):
         lines.append(f"- **Sandbox:** `{prefect['sandbox_start']}`")
-    if prefect.get('run_command'):
-        lines.append(f"- **Run:** `{prefect['run_command']}`")
+    lines.append(f"- **Run:** _auto-detected from branch at runtime_")
     for a in prefect.get('assertions', []):
         lines.append(f"- **Assert {a.get('name','')}:** `{a.get('command','')}`")
 
@@ -1245,6 +1249,7 @@ elif [[ "$MODE" == "prefect-run" ]]; then
   FEATURE_NOTES_DIR="$FEATURE_NOTES_DIR" \
   STATE_PATH="$STATE_PATH" \
   FEATURE_SLUG="$FEATURE_SLUG" \
+  CALLER_DIR="$CALLER_DIR" \
   $PYTHON3 - <<'PYEOF' || _prefect_exit=$?
 import os, json, subprocess, yaml
 from pathlib import Path
@@ -1256,6 +1261,7 @@ feature_notes_dir = Path(os.environ['FEATURE_NOTES_DIR'])
 state_path = Path(os.environ['STATE_PATH'])
 feature_slug = os.environ['FEATURE_SLUG']
 
+caller_dir = Path(os.environ.get('CALLER_DIR', '.'))
 with open(manifest_path, 'r') as f:
     manifest = yaml.safe_load(f)
 
@@ -1270,13 +1276,78 @@ prefect_cfg = manifest.get('prefect', {})
 all_ok = True
 
 # 1. Start sandbox if configured
+import time, urllib.request, urllib.error
 sandbox_cmd = prefect_cfg.get('sandbox_start', '')
+sandbox_proc = None
 if sandbox_cmd:
-    print(f'Starting Prefect sandbox: {sandbox_cmd}')
-    result = subprocess.run(sandbox_cmd, shell=True, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f'❌ Sandbox start failed:\n{result.stderr}')
-        all_ok = False
+    # Check if Prefect server is already running
+    prefect_api = 'http://127.0.0.1:4200/api/health'
+    already_up = False
+    try:
+        urllib.request.urlopen(prefect_api, timeout=1)
+        already_up = True
+    except (urllib.error.URLError, OSError):
+        pass
+
+    if already_up:
+        # Verify version matches the client before trusting the running server
+        try:
+            import importlib.metadata, json as _json
+            client_ver = importlib.metadata.version('prefect')
+            client_major = int(client_ver.split('.')[0])
+            with urllib.request.urlopen('http://127.0.0.1:4200/api/version', timeout=2) as resp:
+                server_ver = str(_json.loads(resp.read().decode()))
+            server_major = int(server_ver.split('.')[0])
+            if client_major != server_major:
+                print(f'⚠️  Version mismatch: client {client_ver}, server {server_ver} — killing stale server...')
+                kill_result = subprocess.run(
+                    'netstat -ano | findstr ":4200 "',
+                    shell=True, capture_output=True, text=True
+                )
+                for line in kill_result.stdout.splitlines():
+                    parts = line.split()
+                    if 'LISTENING' in line and parts:
+                        subprocess.run(f'taskkill /F /PID {parts[-1]}', shell=True, capture_output=True)
+                import time as _time; _time.sleep(1)
+                already_up = False
+            else:
+                print(f'✅ Prefect server already running (v{server_ver})')
+        except Exception:
+            print(f'✅ Prefect server already running')
+
+    if not already_up:
+        # Build env with venv prepended to PATH so sandbox uses venv's prefect, not global
+        venv_dir = manifest.get('env', {}).get('venv', '.venv')
+        venv_scripts = caller_dir / venv_dir / 'Scripts'  # Windows
+        if not venv_scripts.exists():
+            venv_scripts = caller_dir / venv_dir / 'bin'   # Unix
+        sandbox_env = os.environ.copy()
+        sandbox_env['PATH'] = str(venv_scripts) + os.pathsep + sandbox_env.get('PATH', '')
+        print(f'Starting Prefect sandbox: {sandbox_cmd}')
+        sandbox_proc = subprocess.Popen(
+            sandbox_cmd, shell=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=sandbox_env, cwd=str(caller_dir)
+        )
+        max_wait = 30
+        ready = False
+        for i in range(max_wait):
+            try:
+                urllib.request.urlopen(prefect_api, timeout=1)
+                ready = True
+                break
+            except (urllib.error.URLError, OSError):
+                time.sleep(1)
+                if i == 0:
+                    print(f'Waiting for Prefect server', end='', flush=True)
+                else:
+                    print('.', end='', flush=True)
+        print()
+        if ready:
+            print(f'✅ Prefect server ready')
+        else:
+            print(f'❌ Prefect server did not start within {max_wait}s')
+            all_ok = False
 
 # 2. Check services health
 for svc in manifest.get('services', []):
@@ -1288,35 +1359,136 @@ for svc in manifest.get('services', []):
         if h.returncode != 0:
             all_ok = False
 
-# 3. Run Prefect flow
-run_cmd = prefect_cfg.get('run_command', '')
+# 3. Detect and run Prefect flow(s)
+import re, sys
+caller_dir = Path(os.environ.get('CALLER_DIR', '.'))
+
+def tty_input(prompt):
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    try:
+        with open('/dev/tty', 'r') as tty:
+            line = tty.readline()
+            return line.strip() if line else ''
+    except OSError:
+        return ''
+
+def extract_flow_info(py_file):
+    try:
+        content = py_file.read_text(encoding='utf-8')
+    except Exception:
+        return None
+    match = re.search(r'@(?:\w+\.)*(?:register_flow|flow)\b[^\n]*\nasync\s+def\s+(\w+)', content)
+    if not match:
+        match = re.search(r'@(?:\w+\.)*(?:register_flow|flow)\b[^\n]*\ndef\s+(\w+)', content)
+    if not match:
+        return None
+    fn_name = match.group(1)
+    is_async = bool(re.search(r'async\s+def\s+' + re.escape(fn_name), content))
+    try:
+        rel = py_file.relative_to(caller_dir)
+    except ValueError:
+        return None
+    module = str(rel).replace('\\', '/').replace('/', '.').removesuffix('.py')
+    if is_async:
+        cmd = f'python -c "import asyncio; from {module} import {fn_name}; asyncio.run({fn_name}())"'
+    else:
+        cmd = f'python -c "from {module} import {fn_name}; {fn_name}()"'
+    return {'file': str(rel).replace('\\', '/'), 'fn': fn_name, 'cmd': cmd}
+
+venv_dir = manifest.get('env', {}).get('venv', '.venv')
+all_deploy_files = sorted([
+    f for f in caller_dir.glob('**/deployments/*.py')
+    if f.name != '__init__.py'
+    and not any(part in (venv_dir, '.venv', 'venv', 'env') for part in f.parts)
+])
+all_flows = [info for f in all_deploy_files if (info := extract_flow_info(f))]
+
+git_result = subprocess.run(
+    'git diff --name-only origin/master HEAD',
+    shell=True, capture_output=True, text=True, cwd=str(caller_dir)
+)
+changed = [l.strip() for l in git_result.stdout.splitlines() if l.strip()]
+branch_deploy_files = [
+    caller_dir / f for f in changed
+    if 'deployments/' in f and f.endswith('.py') and not f.endswith('__init__.py')
+    and (caller_dir / f).exists()
+]
+branch_flows = [info for f in branch_deploy_files if (info := extract_flow_info(f))]
+
+flows_to_run = []
+
+if branch_flows:
+    if len(branch_flows) == 1:
+        flows_to_run = branch_flows
+        print(f'\n🌿 Detected branch changes:')
+        print(f'   {branch_flows[0]["file"]}')
+        print(f'\n▶  Running: {branch_flows[0]["fn"]}')
+    else:
+        print(f'\n🌿 Detected {len(branch_flows)} changed flow(s) on this branch:')
+        for i, fl in enumerate(branch_flows, 1):
+            print(f'  {i}. {fl["fn"]}  ({fl["file"]})')
+        print(f'  a. Run all')
+        choice = tty_input('\nSelect [a]: ') or 'a'
+        if choice == 'a':
+            flows_to_run = branch_flows
+        else:
+            try:
+                flows_to_run = [branch_flows[int(choice) - 1]]
+            except (ValueError, IndexError):
+                flows_to_run = branch_flows
+elif all_flows:
+    print(f'\n🌿 No new flow files detected on this branch yet.')
+    print(f'\n   Existing flows:')
+    for i, fl in enumerate(all_flows, 1):
+        print(f'     {i}. {fl["fn"]}  ({fl["file"]})')
+    print(f'     (your new flow will appear here once created)\n')
+    choice = tty_input('Select a flow to run [1]: ') or '1'
+    try:
+        flows_to_run = [all_flows[int(choice) - 1]]
+    except (ValueError, IndexError):
+        flows_to_run = [all_flows[0]]
+else:
+    print('\n⚠️  No Prefect flows detected in this repository.')
+    print('   Add flow files to */deployments/*.py to enable prefect-run.')
+
 run_out = ''
-if run_cmd:
-    print(f'Running Prefect flow: {run_cmd}')
+prefect_run_lines = [
+    f'# Prefect Run: {feature_slug}',
+    f'',
+    f'**Timestamp:** {datetime.now(timezone.utc).isoformat()}Z',
+    f'',
+]
+
+for flow_info in flows_to_run:
+    run_cmd = flow_info['cmd']
+    print(f'\nRunning: {flow_info["fn"]}')
     result = subprocess.run(run_cmd, shell=True, capture_output=True, text=True)
-    run_out = result.stdout
-    prefect_run_md = feature_notes_dir / 'qa' / 'prefect-run.md'
-    prefect_run_md.parent.mkdir(parents=True, exist_ok=True)
-    lines = [
-        f'# Prefect Run: {feature_slug}',
+    run_out += result.stdout
+    icon = '✅' if result.returncode == 0 else '❌'
+    print(f'{icon} {flow_info["fn"]} → exit {result.returncode}')
+    prefect_run_lines += [
+        f'## {flow_info["fn"]}',
         f'',
-        f'**Timestamp:** {datetime.now(timezone.utc).isoformat()}Z',
         f'**Command:** `{run_cmd}`',
         f'**Exit code:** {result.returncode}',
         f'',
-        f'## Output',
+        f'### Output',
         f'',
         f'```',
         result.stdout.strip(),
         f'```',
     ]
     if result.stderr.strip():
-        lines += [f'', f'## Stderr', f'', f'```', result.stderr.strip(), f'```']
-    prefect_run_md.write_text('\n'.join(lines) + '\n')
-    icon = '✅' if result.returncode == 0 else '❌'
-    print(f'{icon} Prefect run → exit {result.returncode}')
+        prefect_run_lines += [f'', f'### Stderr', f'', f'```', result.stderr.strip(), f'```']
+    prefect_run_lines.append(f'')
     if result.returncode != 0:
         all_ok = False
+
+if flows_to_run:
+    prefect_run_md = feature_notes_dir / 'qa' / 'prefect-run.md'
+    prefect_run_md.parent.mkdir(parents=True, exist_ok=True)
+    prefect_run_md.write_text('\n'.join(prefect_run_lines) + '\n')
 
 # 4. Run assertions
 assertion_lines = [
@@ -1354,7 +1526,16 @@ assertions_md = feature_notes_dir / 'qa' / 'assertions.md'
 assertions_md.parent.mkdir(parents=True, exist_ok=True)
 assertions_md.write_text('\n'.join(assertion_lines) + '\n')
 
-# 5. Update state
+# 5. Stop sandbox if we started it
+if sandbox_proc is not None:
+    sandbox_proc.terminate()
+    try:
+        sandbox_proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        sandbox_proc.kill()
+    print('Prefect server stopped')
+
+# 6. Update state
 state['qa']['prefect-run'] = 'pass' if all_ok else 'fail'
 state_path.parent.mkdir(parents=True, exist_ok=True)
 with open(state_path, 'w') as f:
