@@ -151,6 +151,50 @@ require_manifest() {
   fi
 }
 
+# validate_manifest — checks manifest is valid YAML with required fields present
+validate_manifest() {
+  REPO_ROOT="$PWD" \
+  MANIFEST_PATH="$MANIFEST_PATH" \
+  $PYTHON3 - <<'PYEOF'
+import os, sys, yaml
+from pathlib import Path
+
+manifest_path = os.environ['MANIFEST_PATH']
+branch_root = Path(os.environ['REPO_ROOT'])
+errors = []
+
+try:
+    with open(manifest_path, 'r') as f:
+        manifest = yaml.safe_load(f)
+except yaml.YAMLError as e:
+    print(f"❌ devflow.yaml is not valid YAML: {e}")
+    sys.exit(1)
+
+if not isinstance(manifest, dict):
+    print("❌ devflow.yaml must be a YAML mapping")
+    sys.exit(1)
+
+venv = manifest.get('env', {}).get('venv', '')
+if not venv:
+    errors.append("env.venv is missing")
+elif not (branch_root / venv).exists():
+    errors.append(f"venv directory not found: {venv} (run bootstrap first)")
+
+suites = manifest.get('qa', {}).get('suites', [])
+if not suites:
+    errors.append("qa.suites is empty — add at least one test suite")
+else:
+    for suite in suites:
+        if not suite.get('command', '').strip():
+            errors.append(f"qa suite {suite.get('name', '(unnamed)')!r} has no command")
+
+if errors:
+    for e in errors:
+        print(f"❌ {e}")
+    sys.exit(1)
+PYEOF
+}
+
 # generate_evidence — generates qa/evidence.md for a feature slug
 generate_evidence() {
   local feature_slug="$1"
@@ -257,7 +301,17 @@ sys.exit(0 if 'prep' in s.get('completed', []) else 1)
 PYEOF
       ;;
     feature) [[ -f "$fnd/plans/plan.md" ]] ;;
-    tdd)     [[ -f "$fnd/build/tdd-summary.md" ]] ;;
+    tdd)
+      TDD_SUMMARY_SD="$fnd/build/tdd-summary.md" $PYTHON3 - <<'PYEOF'
+import os, sys
+p = os.environ['TDD_SUMMARY_SD']
+if not os.path.exists(p):
+    sys.exit(1)
+with open(p) as f:
+    content = f.read()
+sys.exit(0 if '✅ GREEN' in content else 1)
+PYEOF
+      ;;
     qa)
       STATE_PATH_SD="$fnd/state.json" $PYTHON3 - <<'PYEOF'
 import os, json, sys
@@ -652,7 +706,19 @@ Write the full TDD record to $TDD_SUMMARY_PATH immediately before printing the c
 - <any decisions, surprises, or tradeoffs made during implementation>
 \`\`\`
 
-Fill every section with real data from the session. Do not leave placeholder text."
+Fill every section with real data from the session. Do not leave placeholder text.
+
+---
+
+## SELF-CHECK
+
+After all implementation and tests are written, perform this verification pass before finishing:
+
+1. Run the full test suite: \`pytest <test file> -v --tb=short\`
+2. Confirm every test is ✅ GREEN. If any test is RED, fix the **implementation** — do NOT weaken, skip, or remove the test.
+3. Check that no test uses trivial assertions (e.g. \`assert True\`, \`assert 1 == 1\`, \`assert x is not None\` with no further checks). If found, strengthen them to assert real behaviour.
+4. Do NOT modify any code after this check unless a test is actually failing.
+5. Update tdd-summary.md with the verified final results, including \`✅ GREEN\` in the summary line, before finishing."
 
   STAGE="[TDD]"
 
@@ -1059,6 +1125,7 @@ elif [[ "$MODE" == "qa" ]]; then
   require_python
   resolve_branch_root
   require_manifest
+  validate_manifest
   resolve_feature_notes_dir "$FEATURE_SLUG"
   STATE_PATH="$FEATURE_NOTES_DIR/state.json"
 
@@ -1153,6 +1220,7 @@ elif [[ "$MODE" == "deploy" ]]; then
   require_python
   resolve_branch_root
   require_manifest
+  validate_manifest
   resolve_feature_notes_dir "$FEATURE_SLUG"
   STATE_PATH="$FEATURE_NOTES_DIR/state.json"
 
@@ -1231,15 +1299,29 @@ PYEOF
 # -----------------------------
 elif [[ "$MODE" == "prefect-run" ]]; then
 
-  FEATURE_SLUG=$(make_slug "${CONTEXT:-}")
+  _prefect_args=()
+  if [[ -n "$CONTEXT" ]]; then
+    read -ra _prefect_args <<< "$CONTEXT"
+  fi
+  FEATURE_SLUG=$(make_slug "${_prefect_args[0]:-}")
   if [[ -z "$FEATURE_SLUG" ]]; then
-    echo "❌ Usage: ai prefect-run <feature-slug>"
+    echo "❌ Usage: ai prefect-run <feature-slug> [--local]"
     exit 1
   fi
+
+  _local_mode=false
+  _pi=1
+  while [[ $_pi -lt ${#_prefect_args[@]} ]]; do
+    case "${_prefect_args[$_pi]:-}" in
+      --local) _local_mode=true ;;
+    esac
+    _pi=$(( _pi + 1 ))
+  done
 
   require_python
   resolve_branch_root
   require_manifest
+  validate_manifest
   resolve_feature_notes_dir "$FEATURE_SLUG"
   STATE_PATH="$FEATURE_NOTES_DIR/state.json"
 
@@ -1250,6 +1332,7 @@ elif [[ "$MODE" == "prefect-run" ]]; then
   STATE_PATH="$STATE_PATH" \
   FEATURE_SLUG="$FEATURE_SLUG" \
   CALLER_DIR="$CALLER_DIR" \
+  LOCAL_MODE="$_local_mode" \
   $PYTHON3 - <<'PYEOF' || _prefect_exit=$?
 import os, json, subprocess, yaml
 from pathlib import Path
@@ -1262,6 +1345,8 @@ state_path = Path(os.environ['STATE_PATH'])
 feature_slug = os.environ['FEATURE_SLUG']
 
 caller_dir = Path(os.environ.get('CALLER_DIR', '.'))
+local_mode = os.environ.get('LOCAL_MODE', 'false') == 'true'
+
 with open(manifest_path, 'r') as f:
     manifest = yaml.safe_load(f)
 
@@ -1312,8 +1397,10 @@ if sandbox_cmd:
                 already_up = False
             else:
                 print(f'✅ Prefect server already running (v{server_ver})')
+                print(f'⚠️  Server was not started by this session — it will not be stopped automatically when done.')
         except Exception:
             print(f'✅ Prefect server already running')
+            print(f'⚠️  Server was not started by this session — it will not be stopped automatically when done.')
 
     if not already_up:
         # Build env with venv prepended to PATH so sandbox uses venv's prefect, not global
@@ -1359,6 +1446,20 @@ for svc in manifest.get('services', []):
         if h.returncode != 0:
             all_ok = False
 
+# --local mode: run fetch-only script, skip flow detection, assertions and state update
+if local_mode:
+    import sys
+    print('\n🔧 Local mode — fetch only, Snowflake upload skipped. State not updated.\n')
+    result = subprocess.run('python scripts/run_local.py', shell=True, cwd=str(caller_dir))
+    if sandbox_proc is not None:
+        sandbox_proc.terminate()
+        try:
+            sandbox_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            sandbox_proc.kill()
+        print('Prefect server stopped')
+    sys.exit(result.returncode)
+
 # 3. Detect and run Prefect flow(s)
 import re, sys
 caller_dir = Path(os.environ.get('CALLER_DIR', '.'))
@@ -1366,12 +1467,15 @@ caller_dir = Path(os.environ.get('CALLER_DIR', '.'))
 def tty_input(prompt):
     sys.stdout.write(prompt)
     sys.stdout.flush()
-    try:
-        with open('/dev/tty', 'r') as tty:
-            line = tty.readline()
-            return line.strip() if line else ''
-    except OSError:
-        return ''
+    for dev in ('/dev/tty', 'CON'):
+        try:
+            with open(dev, 'r') as tty:
+                line = tty.readline()
+                if line:
+                    return line.strip()
+        except OSError:
+            continue
+    return ''
 
 def extract_flow_info(py_file):
     try:
@@ -1404,11 +1508,39 @@ all_deploy_files = sorted([
 ])
 all_flows = [info for f in all_deploy_files if (info := extract_flow_info(f))]
 
+# Detect default remote branch; fall back to 'master' if unavailable
+try:
+    _remote_info = subprocess.run(
+        ['git', 'remote', 'show', 'origin'],
+        capture_output=True, text=True, cwd=str(caller_dir), timeout=10
+    )
+    import re as _re
+    _m = _re.search(r'HEAD branch:\s*(\S+)', _remote_info.stdout)
+    _default_branch = _m.group(1) if _m else 'master'
+except Exception:
+    _default_branch = 'master'
+
+# Committed changes vs default branch
 git_result = subprocess.run(
-    'git diff --name-only origin/master HEAD',
+    f'git diff --name-only origin/{_default_branch} HEAD',
     shell=True, capture_output=True, text=True, cwd=str(caller_dir)
 )
-changed = [l.strip() for l in git_result.stdout.splitlines() if l.strip()]
+if git_result.returncode != 0 and git_result.stderr.strip():
+    print(f'⚠️  git diff failed: {git_result.stderr.strip()}')
+    print('   Falling back to manual flow selection.')
+
+# Staged but not yet committed changes
+staged_result = subprocess.run(
+    'git diff --name-only --cached',
+    shell=True, capture_output=True, text=True, cwd=str(caller_dir)
+)
+
+_changed_set = set()
+for _line in git_result.stdout.splitlines() + staged_result.stdout.splitlines():
+    if _line.strip():
+        _changed_set.add(_line.strip())
+changed = sorted(_changed_set)
+
 branch_deploy_files = [
     caller_dir / f for f in changed
     if 'deployments/' in f and f.endswith('.py') and not f.endswith('__init__.py')
@@ -1484,6 +1616,9 @@ for flow_info in flows_to_run:
     prefect_run_lines.append(f'')
     if result.returncode != 0:
         all_ok = False
+        if 'snowflake' in result.stderr.lower():
+            print(f'💡 Snowflake connection failed. To test fetch-only without Snowflake:')
+            print(f'   ai prefect-run {feature_slug} --local')
 
 if flows_to_run:
     prefect_run_md = feature_notes_dir / 'qa' / 'prefect-run.md'
@@ -1545,7 +1680,9 @@ import sys
 sys.exit(0 if all_ok else 1)
 PYEOF
 
-  generate_evidence "$FEATURE_SLUG"
+  if [[ "$_local_mode" == false ]]; then
+    generate_evidence "$FEATURE_SLUG"
+  fi
   exit $_prefect_exit
 
 # -----------------------------
@@ -1698,13 +1835,14 @@ elif [[ "$MODE" == "run" ]]; then
 
   # Usage: ai run <slug> [--from <stage>] [--to <stage>]
   #                      [--skip-tdd] [--skip-qa] [--skip-prefect] [--skip-deploy]
+  #                      [--reset-state]
   _run_args=()
   if [[ -n "$CONTEXT" ]]; then
     read -ra _run_args <<< "$CONTEXT"
   fi
   FEATURE_SLUG=$(make_slug "${_run_args[0]:-}")
   if [[ -z "$FEATURE_SLUG" ]]; then
-    echo "❌ Usage: ai run <slug> [--from <stage>] [--to <stage>] [--skip-tdd] [--skip-qa] [--skip-prefect] [--skip-deploy]"
+    echo "❌ Usage: ai run <slug> [--from <stage>] [--to <stage>] [--skip-tdd] [--skip-qa] [--skip-prefect] [--skip-deploy] [--reset-state] [--interactive]"
     exit 1
   fi
 
@@ -1714,6 +1852,8 @@ elif [[ "$MODE" == "run" ]]; then
   _skip_qa=false
   _skip_prefect=false
   _skip_deploy=false
+  _reset_state=false
+  _interactive=false
 
   _i=1
   while [[ $_i -lt ${#_run_args[@]} ]]; do
@@ -1724,6 +1864,8 @@ elif [[ "$MODE" == "run" ]]; then
       --skip-qa)      _skip_qa=true ;;
       --skip-prefect) _skip_prefect=true ;;
       --skip-deploy)  _skip_deploy=true ;;
+      --reset-state)  _reset_state=true ;;
+      --interactive)  _interactive=true ;;
     esac
     _i=$(( _i + 1 ))
   done
@@ -1731,7 +1873,16 @@ elif [[ "$MODE" == "run" ]]; then
   require_python
   resolve_branch_root
   require_manifest
+  validate_manifest
   resolve_feature_notes_dir "$FEATURE_SLUG"
+
+  if [[ "$_reset_state" == true ]]; then
+    _state_file="$FEATURE_NOTES_DIR/state.json"
+    if [[ -f "$_state_file" ]]; then
+      rm "$_state_file"
+      echo "🗑️  State reset for $FEATURE_SLUG"
+    fi
+  fi
 
   _ALL_STAGES=(prep feature tdd qa prefect deploy)
   OPS_DIR="$FEATURE_NOTES_DIR/ops"
@@ -1783,6 +1934,20 @@ elif [[ "$MODE" == "run" ]]; then
       _log_rows+=("$_stage|already-done|—")
       _last_stage="$_stage"
       continue
+    fi
+
+    # Interactive gate — prompt before each automated stage (opt-in via --interactive)
+    # Skipped for the --from stage (user already chose to start there)
+    if [[ "$_interactive" == true && "$_stage" != "feature" && "$_stage" != "tdd" && "$_stage" != "$_from_stage" ]]; then
+      printf "\n  ❓ [%s] — proceed? [Y/n]: " "$_stage"
+      _gate_input=""
+      read -r _gate_input </dev/tty 2>/dev/null || read -r _gate_input 2>/dev/null || true
+      if [[ "$_gate_input" =~ ^[Nn] ]]; then
+        echo "  ⏹️  [$_stage] cancelled by user"
+        _log_rows+=("$_stage|cancelled|—")
+        _overall_status="cancelled"
+        break
+      fi
     fi
 
     # Map stage → subcommand
