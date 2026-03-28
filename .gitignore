@@ -4,3 +4,5 @@ prompt.md
 node_modules/
 .claude/
 config.local
+__pycache__/
+*.py[cod]

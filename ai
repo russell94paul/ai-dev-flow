@@ -4,6 +4,7 @@ set -euo pipefail
 
 CALLER_DIR=$(pwd)
 SKILL_DIR="$HOME/ai-dev-flow/skills"
+LIB_DIR="$HOME/ai-dev-flow/lib"
 
 # Load local config (sets AI_DEV_FLOW_NOTES_ROOT etc.) if present.
 CONFIG_LOCAL="$HOME/ai-dev-flow/config.local"
@@ -155,39 +156,14 @@ require_manifest() {
 validate_manifest() {
   REPO_ROOT="$PWD" \
   MANIFEST_PATH="$MANIFEST_PATH" \
+  LIB_DIR="$LIB_DIR" \
   $PYTHON3 - <<'PYEOF'
-import os, sys, yaml
+import os, sys
 from pathlib import Path
+sys.path.insert(0, os.environ['LIB_DIR'])
+from devflow import validate_manifest as _validate
 
-manifest_path = os.environ['MANIFEST_PATH']
-branch_root = Path(os.environ['REPO_ROOT'])
-errors = []
-
-try:
-    with open(manifest_path, 'r') as f:
-        manifest = yaml.safe_load(f)
-except yaml.YAMLError as e:
-    print(f"❌ devflow.yaml is not valid YAML: {e}")
-    sys.exit(1)
-
-if not isinstance(manifest, dict):
-    print("❌ devflow.yaml must be a YAML mapping")
-    sys.exit(1)
-
-venv = manifest.get('env', {}).get('venv', '')
-if not venv:
-    errors.append("env.venv is missing")
-elif not (branch_root / venv).exists():
-    errors.append(f"venv directory not found: {venv} (run bootstrap first)")
-
-suites = manifest.get('qa', {}).get('suites', [])
-if not suites:
-    errors.append("qa.suites is empty — add at least one test suite")
-else:
-    for suite in suites:
-        if not suite.get('command', '').strip():
-            errors.append(f"qa suite {suite.get('name', '(unnamed)')!r} has no command")
-
+errors = _validate(Path(os.environ['MANIFEST_PATH']), Path(os.environ['REPO_ROOT']))
 if errors:
     for e in errors:
         print(f"❌ {e}")
@@ -201,81 +177,42 @@ generate_evidence() {
   MANIFEST_PATH="$MANIFEST_PATH" \
   FEATURE_NOTES_DIR="$FEATURE_NOTES_DIR" \
   FEATURE_SLUG="$feature_slug" \
+  LIB_DIR="$LIB_DIR" \
   $PYTHON3 - <<'PYEOF'
-import os, json, hashlib, yaml
+import os, sys
 from pathlib import Path
-from datetime import datetime, timezone
+sys.path.insert(0, os.environ['LIB_DIR'])
+from devflow import generate_evidence as _generate
 
-manifest_path = os.environ['MANIFEST_PATH']
-feature_notes_dir = Path(os.environ['FEATURE_NOTES_DIR'])
-feature_slug = os.environ['FEATURE_SLUG']
-
-state_path = feature_notes_dir / 'state.json'
-evidence_path = feature_notes_dir / 'qa' / 'evidence.md'
-evidence_path.parent.mkdir(parents=True, exist_ok=True)
-
-# Load manifest
-with open(manifest_path, 'r') as f:
-  manifest = yaml.safe_load(f)
-
-# Load state
-state = {}
-if state_path.exists():
-  with open(state_path, 'r') as f:
-    state = json.load(f)
-
-# Compute manifest sha256
-with open(manifest_path, 'rb') as f:
-  manifest_sha = hashlib.sha256(f.read()).hexdigest()
-
-# Artifact paths
-prd_path = feature_notes_dir / 'specs' / 'prd.md'
-plan_path = feature_notes_dir / 'plans' / 'plan.md'
-diagram_path = feature_notes_dir / 'specs' / 'diagram.md'
-
-lines = [
-  f'# Evidence: {feature_slug}',
-  f'',
-  f'**Generated:** {datetime.now(timezone.utc).isoformat()}Z',
-  f'**Manifest SHA256:** `{manifest_sha}`',
-  f'',
-  f'## Artifacts',
-  f'',
-  f'| Artifact | Path | Exists |',
-  f'|----------|------|--------|',
-  f'| PRD | {prd_path} | {"yes" if prd_path.exists() else "no"} |',
-  f'| Plan | {plan_path} | {"yes" if plan_path.exists() else "no"} |',
-  f'| Diagram | {diagram_path} | {"yes" if diagram_path.exists() else "no"} |',
-  f'',
-  f'## QA Suites',
-  f'',
-  f'| Suite | Status | Artifact |',
-  f'|-------|--------|----------|',
-]
-
-qa_suites = manifest.get('qa', {}).get('suites', [])
-qa_state = state.get('qa', {})
-for suite in qa_suites:
-  name = suite.get('name', '')
-  artifact_tmpl = suite.get('artifact', '')
-  artifact = artifact_tmpl.replace('%slug%', feature_slug)
-  slug_key = name.lower().replace(' ', '-')
-  status = qa_state.get(slug_key, 'pending')
-  lines.append(f'| {name} | {status} | {artifact} |')
-
-lines += [
-  f'',
-  f'## Prefect Run',
-  f'',
-  f'**Status:** {state.get("qa", {}).get("prefect-run", "pending")}',
-  f'',
-  f'## Deploy',
-  f'',
-  f'**Status:** {state.get("deploy", {}).get("status", "pending")}',
-]
-
-evidence_path.write_text('\n'.join(lines) + '\n')
+evidence_path = _generate(
+    Path(os.environ['MANIFEST_PATH']),
+    Path(os.environ['FEATURE_NOTES_DIR']),
+    os.environ['FEATURE_SLUG'],
+)
 print(f'✅ Evidence written to {evidence_path}')
+PYEOF
+}
+
+# check_evidence — gates ai deploy by verifying QA stages passed and evidence.md exists
+check_evidence() {
+  local feature_slug="$1"
+  FEATURE_NOTES_DIR="$FEATURE_NOTES_DIR" \
+  FEATURE_SLUG="$feature_slug" \
+  LIB_DIR="$LIB_DIR" \
+  $PYTHON3 - <<'PYEOF'
+import os, sys
+from pathlib import Path
+sys.path.insert(0, os.environ['LIB_DIR'])
+from devflow import check_evidence as _check
+
+feature_slug = os.environ['FEATURE_SLUG']
+errors = _check(Path(os.environ['FEATURE_NOTES_DIR']), feature_slug)
+if errors:
+    print(f"❌ Deploy blocked for '{feature_slug}':")
+    for e in errors:
+        print(f"   • {e}")
+    sys.exit(1)
+print(f"✅ Evidence check passed for '{feature_slug}'")
 PYEOF
 }
 
@@ -288,65 +225,15 @@ PYEOF
 # Requires PYTHON3 to be set (call require_python first).
 stage_done() {
   local fnd="$1" stage="$2"
-  case "$stage" in
-    prep)
-      STATE_PATH_SD="$fnd/state.json" $PYTHON3 - <<'PYEOF'
-import os, json, sys
-sp = os.environ['STATE_PATH_SD']
-if not os.path.exists(sp):
-    sys.exit(1)
-with open(sp) as f:
-    s = json.load(f)
-sys.exit(0 if 'prep' in s.get('completed', []) else 1)
-PYEOF
-      ;;
-    feature) [[ -f "$fnd/plans/plan.md" ]] ;;
-    tdd)
-      TDD_SUMMARY_SD="$fnd/build/tdd-summary.md" $PYTHON3 - <<'PYEOF'
+  FEATURE_NOTES_DIR_SD="$fnd" STAGE_SD="$stage" LIB_DIR="$LIB_DIR" \
+  $PYTHON3 - <<'PYEOF'
 import os, sys
-p = os.environ['TDD_SUMMARY_SD']
-if not os.path.exists(p):
-    sys.exit(1)
-with open(p) as f:
-    content = f.read()
-sys.exit(0 if '✅ GREEN' in content else 1)
+from pathlib import Path
+sys.path.insert(0, os.environ['LIB_DIR'])
+from devflow import stage_done as _stage_done
+result = _stage_done(Path(os.environ['FEATURE_NOTES_DIR_SD']), os.environ['STAGE_SD'])
+sys.exit(0 if result else 1)
 PYEOF
-      ;;
-    qa)
-      STATE_PATH_SD="$fnd/state.json" $PYTHON3 - <<'PYEOF'
-import os, json, sys
-sp = os.environ['STATE_PATH_SD']
-if not os.path.exists(sp):
-    sys.exit(1)
-with open(sp) as f:
-    s = json.load(f)
-sys.exit(0 if s.get('qa', {}).get('unit') == 'pass' else 1)
-PYEOF
-      ;;
-    prefect)
-      STATE_PATH_SD="$fnd/state.json" $PYTHON3 - <<'PYEOF'
-import os, json, sys
-sp = os.environ['STATE_PATH_SD']
-if not os.path.exists(sp):
-    sys.exit(1)
-with open(sp) as f:
-    s = json.load(f)
-sys.exit(0 if s.get('qa', {}).get('prefect-run') == 'pass' else 1)
-PYEOF
-      ;;
-    deploy)
-      STATE_PATH_SD="$fnd/state.json" $PYTHON3 - <<'PYEOF'
-import os, json, sys
-sp = os.environ['STATE_PATH_SD']
-if not os.path.exists(sp):
-    sys.exit(1)
-with open(sp) as f:
-    s = json.load(f)
-sys.exit(0 if s.get('deploy', {}).get('status') == 'success' else 1)
-PYEOF
-      ;;
-    *) return 1 ;;
-  esac
 }
 
 # -----------------------------
@@ -376,6 +263,8 @@ elif [[ "$QUERY" == "loop" ]]; then
   MODE="loop"
 elif [[ "$QUERY" == "backlog-add" ]]; then
   MODE="backlog-add"
+elif [[ "$QUERY" == "connector" ]]; then
+  MODE="connector"
 else
   MODE="single"
 fi
@@ -1222,6 +1111,7 @@ elif [[ "$MODE" == "deploy" ]]; then
   require_manifest
   validate_manifest
   resolve_feature_notes_dir "$FEATURE_SLUG"
+  check_evidence "$FEATURE_SLUG"
   STATE_PATH="$FEATURE_NOTES_DIR/state.json"
 
   _deploy_exit=0
@@ -1684,6 +1574,127 @@ PYEOF
     generate_evidence "$FEATURE_SLUG"
   fi
   exit $_prefect_exit
+
+# -----------------------------
+# CONNECTOR MODE (Claude Code CLI)
+# -----------------------------
+elif [[ "$MODE" == "connector" ]]; then
+
+  FEATURE_SLUG=$(make_slug "${CONTEXT:-}")
+
+  if [[ -z "$FEATURE_SLUG" ]]; then
+    echo "❌ Usage: ai connector <feature-slug>"
+    exit 1
+  fi
+
+  resolve_feature_notes_dir "$FEATURE_SLUG"
+  PLAN_PATH="$FEATURE_NOTES_DIR/plans/plan.md"
+  CONNECTOR_SUMMARY_PATH="$FEATURE_NOTES_DIR/build/connector-summary.md"
+
+  if [[ ! -f "$PLAN_PATH" ]]; then
+    echo "❌ No plan found at: $PLAN_PATH"
+    echo "   Run 'ai feature \"<idea>\"' first to generate a plan."
+    exit 1
+  fi
+
+  PLAN_CONTENT=$(cat "$PLAN_PATH")
+  GUARDRAILS=$(cat "$SKILL_DIR/git-guardrails-claude-code/SKILL.md")
+  CONNECTOR_SKILL=$(cat "$SKILL_DIR/connector/SKILL.md")
+
+  OUTPUT="## GIT GUARDRAILS — CRITICAL
+
+You are operating in a user's repository via Claude Code CLI.
+
+NEVER run any of the following without explicit written user confirmation:
+- git commit
+- git push (any form)
+- git reset --hard
+- git clean
+- git checkout -- (discarding changes)
+- git branch -D
+
+Before ANY git command:
+1. State the exact command and why.
+2. Wait for the user to confirm (\"yes\" or \"confirmed\").
+3. Only then execute.
+
+If hooks fail, fix the underlying cause — never use --no-verify.
+
+---
+
+$GUARDRAILS
+
+---
+
+$CONNECTOR_SKILL
+
+---
+
+## Implementation Plan
+
+$PLAN_CONTENT
+
+---
+
+## OUTPUT REQUIREMENTS
+
+Write the connector summary to:
+- POSIX:   $CONNECTOR_SUMMARY_PATH
+- Windows: $(cygpath -w "$CONNECTOR_SUMMARY_PATH" 2>/dev/null || echo "$CONNECTOR_SUMMARY_PATH")
+
+Create the build/ directory if it does not exist.
+
+When all steps are complete, print exactly:
+  CONNECTOR COMPLETE. To run the full pipeline:
+    ai prefect-run $FEATURE_SLUG"
+
+  STAGE="[CONNECTOR]"
+
+  PROMPT_FILE="/tmp/devflow-connector-${FEATURE_SLUG}.md"
+  echo "$OUTPUT" > "$PROMPT_FILE"
+
+  if command -v cygpath &>/dev/null; then
+    PROMPT_FILE_WIN=$(cygpath -w "$PROMPT_FILE")
+  else
+    PROMPT_FILE_WIN="$PROMPT_FILE"
+  fi
+
+  if echo "@${PROMPT_FILE_WIN}" | clip.exe 2>/dev/null; then
+    CLIP_OK=true
+  else
+    CLIP_OK=false
+    echo "⚠️  Clipboard copy failed. Paste manually: @${PROMPT_FILE}"
+  fi
+
+  echo ""
+  echo "🤖 Mode: $MODE"
+  echo "🎯 Stage: $STAGE"
+  echo "📋 Plan:      $PLAN_PATH"
+  echo "📄 Summary:   $CONNECTOR_SUMMARY_PATH"
+  echo "📝 Prompt:    $PROMPT_FILE"
+  echo ""
+  echo "⚠️  Close any other open Claude windows before continuing."
+  echo "   (AHK pastes into whichever Claude window gains focus — the new one must be on top.)"
+  read -r -p "   Press Enter when ready to launch..."
+  echo ""
+  echo "🚀 Opening Claude Code..."
+
+  powershell.exe -NoProfile -Command "Start-Process '$CLAUDE_CMD'"
+
+  sleep 6
+  echo "⌨️ Sending prompt..."
+  powershell.exe -Command "& '$AHK_SCRIPT' 'connector'"
+
+  echo "✅ Done. Claude Code should now be loading the connector context."
+  echo ""
+  if [[ "$CLIP_OK" == false ]]; then
+    echo "⚠️  Clipboard failed — paste manually in Claude Code:"
+    echo "   @${PROMPT_FILE_WIN}"
+  else
+    echo "   Fallback: if AHK missed, paste manually in Claude Code:"
+    echo "   @${PROMPT_FILE_WIN}"
+  fi
+  exit 0
 
 # -----------------------------
 # BACKLOG-ADD MODE
