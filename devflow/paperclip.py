@@ -271,21 +271,30 @@ class PaperclipClient:
         status: Optional[str] = None,
         comment: Optional[str] = None,
     ) -> Issue:
-        """Update issue status and/or post a comment."""
+        """
+        Update issue status and/or post a comment.
+
+        The Paperclip PATCH endpoint accepts an optional ``comment`` field
+        so both the status update and the comment land in the same atomic
+        request.  A separate POST to /comments is only used as a fallback
+        when we want to add a comment without changing status.
+        """
         payload: dict = {}
         if status:
             payload["status"] = status
+        if comment:
+            payload["comment"] = comment
 
         data = await self._request("PATCH", f"/api/issues/{issue_id}", json=payload)
-
-        if comment:
-            await self._request(
-                "POST",
-                f"/api/issues/{issue_id}/comments",
-                json={"body": comment},
-            )
-
         return _parse_issue(data)
+
+    async def post_comment(self, issue_id: str, body: str) -> None:
+        """Post a standalone comment without changing issue status."""
+        await self._request(
+            "POST",
+            f"/api/issues/{issue_id}/comments",
+            json={"body": body},
+        )
 
     async def create_issue(
         self,
@@ -310,6 +319,111 @@ class PaperclipClient:
             json=payload,
         )
         return _parse_issue(data)
+
+    # ------------------------------------------------------------------
+    # Documents
+    # ------------------------------------------------------------------
+
+    async def get_document(self, issue_id: str, key: str) -> dict:
+        """
+        Fetch an issue document by key (e.g. "plan", "state").
+        Returns the raw document dict. Raises httpx.HTTPStatusError on 404.
+        """
+        return await self._request("GET", f"/api/issues/{issue_id}/documents/{key}")
+
+    async def put_document(
+        self,
+        issue_id: str,
+        key: str,
+        title: str,
+        body: str,
+        format: str = "markdown",
+        base_revision_id: Optional[str] = None,
+    ) -> dict:
+        """
+        Create or update an issue document.
+        Fetch the existing document first and pass its revision ID to avoid conflicts.
+        """
+        payload: dict = {
+            "title": title,
+            "format": format,
+            "body": body,
+            "baseRevisionId": base_revision_id,
+        }
+        return await self._request(
+            "PUT",
+            f"/api/issues/{issue_id}/documents/{key}",
+            json=payload,
+        )
+
+    # ------------------------------------------------------------------
+    # State checkpointing
+    # ------------------------------------------------------------------
+
+    async def load_state(self, issue_id: str) -> dict:
+        """
+        Read the JSON state document (key: "state") from an issue.
+        Returns an empty dict when no state document exists yet.
+        """
+        try:
+            doc = await self.get_document(issue_id, "state")
+            body = doc.get("body", "{}")
+            import json
+            return json.loads(body) if body else {}
+        except Exception:
+            return {}
+
+    async def save_state(self, issue_id: str, state: dict) -> None:
+        """
+        Persist phase progress to the issue's "state" document so it survives restarts.
+        Fetches the current revision ID first to avoid conflict errors.
+        """
+        import json
+        base_revision_id: Optional[str] = None
+        try:
+            existing = await self.get_document(issue_id, "state")
+            base_revision_id = existing.get("revisionId")
+        except Exception:
+            pass
+
+        body = json.dumps(state, indent=2)
+        await self.put_document(
+            issue_id=issue_id,
+            key="state",
+            title="State",
+            body=body,
+            format="json",
+            base_revision_id=base_revision_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Attachments
+    # ------------------------------------------------------------------
+
+    async def upload_attachment(
+        self,
+        company_id: str,
+        issue_id: str,
+        file_path: str,
+        content: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> dict:
+        """
+        Upload a file attachment to an issue.
+        Returns the created attachment dict with at least {"id": ..., "url": ...}.
+        """
+        if self._http is None:
+            raise PaperclipError("PaperclipClient must be used as async context manager")
+
+        files = {"file": (file_path, content, content_type)}
+        resp = await self._http.post(
+            f"/api/companies/{company_id}/issues/{issue_id}/attachments",
+            files=files,
+        )
+        if resp.status_code == 409:
+            raise PaperclipCheckoutConflict("Attachment conflict (409).")
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
 
     # ------------------------------------------------------------------
     # Approvals
@@ -380,10 +494,7 @@ def client_from_env(run_id: str = "") -> Optional[PaperclipClient]:
       PAPERCLIP_RUN_ID    — injected by Paperclip during heartbeat runs
     """
     api_key = os.environ.get("PAPERCLIP_API_KEY", "")
-    company_id = os.environ.get("PAPERCLIP_COMPANY_ID", "")
-    # Enabled if we have an explicit key OR if Paperclip injected COMPANY_ID
-    # (local_trusted mode: all loopback requests trusted, no key required)
-    if not api_key and not company_id:
+    if not api_key:
         return None
     api_url = os.environ.get("PAPERCLIP_API_URL", "http://localhost:3100")
     effective_run_id = run_id or os.environ.get("PAPERCLIP_RUN_ID", "")

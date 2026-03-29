@@ -321,3 +321,186 @@ class TestClientFromEnv:
         monkeypatch.setenv("PAPERCLIP_RUN_ID", "run-from-env")
         pc = client_from_env(run_id="run-explicit")
         assert pc._run_id == "run-explicit"
+
+    def test_returns_none_when_only_company_id_set(self, monkeypatch):
+        """PAPERCLIP_COMPANY_ID alone is not sufficient — API key is required."""
+        monkeypatch.delenv("PAPERCLIP_API_KEY", raising=False)
+        monkeypatch.setenv("PAPERCLIP_COMPANY_ID", "co-123")
+        assert client_from_env() is None
+
+
+# ---------------------------------------------------------------------------
+# get_document / put_document
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestDocuments:
+    @respx.mock
+    async def test_get_document_success(self):
+        respx.get(f"{BASE}/api/issues/issue-1/documents/plan").mock(
+            return_value=httpx.Response(200, json={
+                "id": "doc-1",
+                "key": "plan",
+                "title": "Plan",
+                "body": "# Plan\n\nDo the thing.",
+                "format": "markdown",
+                "revisionId": "rev-abc",
+            })
+        )
+        async with _client() as pc:
+            doc = await pc.get_document("issue-1", "plan")
+
+        assert doc["key"] == "plan"
+        assert "# Plan" in doc["body"]
+        assert doc["revisionId"] == "rev-abc"
+
+    @respx.mock
+    async def test_put_document_creates_new(self):
+        route = respx.put(f"{BASE}/api/issues/issue-1/documents/state").mock(
+            return_value=httpx.Response(200, json={
+                "id": "doc-2",
+                "key": "state",
+                "title": "State",
+                "body": '{"phase": "tdd"}',
+                "format": "json",
+                "revisionId": "rev-1",
+            })
+        )
+        async with _client() as pc:
+            doc = await pc.put_document(
+                issue_id="issue-1",
+                key="state",
+                title="State",
+                body='{"phase": "tdd"}',
+                format="json",
+            )
+
+        assert doc["key"] == "state"
+        sent = route.calls[0].request
+        import json
+        body = json.loads(sent.content)
+        assert body["title"] == "State"
+        assert body["format"] == "json"
+        assert body["baseRevisionId"] is None
+
+    @respx.mock
+    async def test_put_document_sends_base_revision_id(self):
+        route = respx.put(f"{BASE}/api/issues/issue-1/documents/state").mock(
+            return_value=httpx.Response(200, json={"key": "state", "revisionId": "rev-2"})
+        )
+        async with _client() as pc:
+            await pc.put_document(
+                issue_id="issue-1",
+                key="state",
+                title="State",
+                body="{}",
+                base_revision_id="rev-1",
+            )
+
+        import json
+        body = json.loads(route.calls[0].request.content)
+        assert body["baseRevisionId"] == "rev-1"
+
+
+# ---------------------------------------------------------------------------
+# load_state / save_state
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestStateCheckpointing:
+    @respx.mock
+    async def test_load_state_parses_json(self):
+        respx.get(f"{BASE}/api/issues/issue-1/documents/state").mock(
+            return_value=httpx.Response(200, json={
+                "key": "state",
+                "body": '{"phase": "qa", "done": true}',
+                "revisionId": "rev-x",
+            })
+        )
+        async with _client() as pc:
+            state = await pc.load_state("issue-1")
+
+        assert state == {"phase": "qa", "done": True}
+
+    @respx.mock
+    async def test_load_state_returns_empty_on_404(self):
+        respx.get(f"{BASE}/api/issues/issue-1/documents/state").mock(
+            return_value=httpx.Response(404, json={"error": "not found"})
+        )
+        async with _client() as pc:
+            state = await pc.load_state("issue-1")
+
+        assert state == {}
+
+    @respx.mock
+    async def test_save_state_fetches_revision_then_puts(self):
+        respx.get(f"{BASE}/api/issues/issue-1/documents/state").mock(
+            return_value=httpx.Response(200, json={
+                "key": "state",
+                "body": "{}",
+                "revisionId": "rev-99",
+            })
+        )
+        put_route = respx.put(f"{BASE}/api/issues/issue-1/documents/state").mock(
+            return_value=httpx.Response(200, json={"key": "state", "revisionId": "rev-100"})
+        )
+        async with _client() as pc:
+            await pc.save_state("issue-1", {"phase": "deploy"})
+
+        import json
+        body = json.loads(put_route.calls[0].request.content)
+        assert json.loads(body["body"]) == {"phase": "deploy"}
+        assert body["baseRevisionId"] == "rev-99"
+
+    @respx.mock
+    async def test_save_state_works_when_no_prior_doc(self):
+        """save_state should succeed even if the state document doesn't exist yet."""
+        respx.get(f"{BASE}/api/issues/issue-1/documents/state").mock(
+            return_value=httpx.Response(404, json={"error": "not found"})
+        )
+        put_route = respx.put(f"{BASE}/api/issues/issue-1/documents/state").mock(
+            return_value=httpx.Response(200, json={"key": "state", "revisionId": "rev-1"})
+        )
+        async with _client() as pc:
+            await pc.save_state("issue-1", {"phase": "feature"})
+
+        import json
+        body = json.loads(put_route.calls[0].request.content)
+        assert body["baseRevisionId"] is None
+
+
+# ---------------------------------------------------------------------------
+# upload_attachment
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestUploadAttachment:
+    @respx.mock
+    async def test_uploads_file_and_returns_attachment(self):
+        route = respx.post(f"{BASE}/api/companies/co-1/issues/issue-1/attachments").mock(
+            return_value=httpx.Response(200, json={
+                "id": "att-1",
+                "filename": "evidence.md",
+                "url": "http://localhost:3100/files/att-1",
+            })
+        )
+        async with _client() as pc:
+            result = await pc.upload_attachment(
+                company_id="co-1",
+                issue_id="issue-1",
+                file_path="evidence.md",
+                content=b"# Evidence\nAll tests pass.",
+                content_type="text/markdown",
+            )
+
+        assert result["id"] == "att-1"
+        assert route.call_count == 1
+
+    @respx.mock
+    async def test_upload_conflict_raises(self):
+        respx.post(f"{BASE}/api/companies/co-1/issues/issue-1/attachments").mock(
+            return_value=httpx.Response(409, json={"error": "conflict"})
+        )
+        async with _client() as pc:
+            with pytest.raises(PaperclipCheckoutConflict):
+                await pc.upload_attachment("co-1", "issue-1", "f.txt", b"data")
