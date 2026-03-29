@@ -4,6 +4,7 @@ Unit tests for lib/devflow.py.
 Run from ~/ai-dev-flow:
     pytest tests/test_devflow.py -v
 """
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -11,8 +12,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
-from devflow import check_evidence, generate_evidence, stage_done, validate_manifest
+# Load lib/devflow.py directly so we don't shadow the devflow/ package.
+_lib_path = Path(__file__).parent.parent / "lib" / "devflow.py"
+_spec = importlib.util.spec_from_file_location("lib_devflow", _lib_path)
+_lib = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
+_spec.loader.exec_module(_lib)  # type: ignore[union-attr]
+check_evidence = _lib.check_evidence
+generate_evidence = _lib.generate_evidence
+stage_done = _lib.stage_done
+validate_manifest = _lib.validate_manifest
 
 
 # ---------------------------------------------------------------------------

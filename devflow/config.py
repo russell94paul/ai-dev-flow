@@ -14,7 +14,7 @@ from pathlib import Path
 class Config:
     # Anthropic API
     api_key: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", ""))
-    model: str = field(default_factory=lambda: os.environ.get("DEVFLOW_MODEL", "claude-opus-4-6"))
+    model: str = field(default_factory=lambda: os.environ.get("DEVFLOW_MODEL", "claude-sonnet-4-6"))
 
     # File system roots
     notes_root: Path = field(
@@ -32,6 +32,32 @@ class Config:
             os.environ.get("DEVFLOW_LIB_DIR", Path.home() / "ai-dev-flow" / "lib")
         )
     )
+
+    # Paperclip orchestration (all optional — absent = degraded/local-only mode)
+    paperclip_url: str = field(
+        default_factory=lambda: os.environ.get("PAPERCLIP_API_URL", "http://localhost:3100")
+    )
+    paperclip_key: str = field(
+        default_factory=lambda: os.environ.get("PAPERCLIP_API_KEY", "")
+    )
+    paperclip_run_id: str = field(
+        default_factory=lambda: os.environ.get("PAPERCLIP_RUN_ID", "")
+    )
+    paperclip_company_id: str = field(
+        default_factory=lambda: os.environ.get("PAPERCLIP_COMPANY_ID", "")
+    )
+    paperclip_agent_id: str = field(
+        default_factory=lambda: os.environ.get("PAPERCLIP_AGENT_ID", "")
+    )
+
+    @property
+    def paperclip_enabled(self) -> bool:
+        """
+        True when Paperclip integration is configured.
+        In local_trusted mode Paperclip injects PAPERCLIP_COMPANY_ID but no
+        API key — treat that as enabled too.
+        """
+        return bool(self.paperclip_key or self.paperclip_company_id)
 
     def validate(self) -> list[str]:
         """Return a list of error strings. Empty = config is valid."""
