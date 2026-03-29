@@ -1,0 +1,197 @@
+# Connector Pipeline Workflow Template
+#
+# Phased workflow: Grill -> PRD -> Plan -> Build -> QA -> Deploy
+#
+# Usage:
+#   devflow connector run --spec connectors/my_connector.yaml
+#   devflow connector scaffold --spec connectors/my_connector.yaml
+#
+# Each phase has:
+#   - inputs:  files/data consumed by the phase
+#   - outputs: artifacts produced and checked into the workspace
+#   - done_signal: marker that devflow checks to consider the phase complete
+
+version: "1"
+kind: connector-workflow
+
+metadata:
+  name: "{{ connector_name }}"
+  source: "{{ source_system }}"
+  destination: "{{ destination_system }}"
+  owner: "{{ owner }}"
+  created: "{{ created_date }}"
+
+phases:
+
+  # ---------------------------------------------------------------------------
+  # Phase 1 — Grill
+  # Ask clarifying questions to surface hidden requirements and edge cases
+  # before any spec is written.
+  # ---------------------------------------------------------------------------
+  - id: grill
+    name: "Grill"
+    description: >
+      Interview the requester to surface scope, volume, SLA, and edge cases.
+      Outputs a structured Q&A log that feeds the PRD.
+    inputs:
+      - idea: "{{ connector_idea }}"           # free-text description from requester
+    outputs:
+      - path: "connectors/{{ connector_name }}/grill.md"
+        description: "Q&A log — questions asked and answers recorded"
+    done_signal:
+      file: "connectors/{{ connector_name }}/grill.md"
+      contains: "GRILL COMPLETE"
+    prompts:
+      system: |
+        You are a senior data engineer running a discovery session for a new connector.
+        Ask pointed questions covering: source schema, destination schema, volume,
+        incremental vs. full-load strategy, PII handling, SLA, retry/idempotency
+        requirements, and known edge cases.
+        When all questions are answered, print exactly: GRILL COMPLETE
+      user: "{{ connector_idea }}"
+
+  # ---------------------------------------------------------------------------
+  # Phase 2 — PRD (Product Requirements Document)
+  # Translate the grill Q&A into a formal spec.
+  # ---------------------------------------------------------------------------
+  - id: prd
+    name: "PRD"
+    description: >
+      Produce a formal connector spec: schema contracts, transform rules,
+      error handling policy, and acceptance criteria.
+    inputs:
+      - path: "connectors/{{ connector_name }}/grill.md"
+    outputs:
+      - path: "connectors/{{ connector_name }}/prd.md"
+        description: "Connector PRD — schema contracts + acceptance criteria"
+    done_signal:
+      file: "connectors/{{ connector_name }}/prd.md"
+      contains: "PRD COMPLETE"
+    prompts:
+      system: |
+        You are a technical product manager writing a connector PRD.
+        Based on the grill Q&A, produce:
+        1. Source schema (fields, types, nullable flags)
+        2. Destination schema (fields, types, nullable flags)
+        3. Transform rules (field mappings, type coercions, derivations)
+        4. Error handling policy (retry, dead-letter, alerting)
+        5. Acceptance criteria (row count assertions, data integrity checks)
+        End with: PRD COMPLETE
+      user: "{{ grill_md_content }}"
+
+  # ---------------------------------------------------------------------------
+  # Phase 3 — Plan
+  # Generate the Prefect flow implementation plan.
+  # ---------------------------------------------------------------------------
+  - id: plan
+    name: "Plan"
+    description: >
+      Break the PRD into a concrete Prefect flow implementation plan with
+      task decomposition, test strategy, and dependency mapping.
+    inputs:
+      - path: "connectors/{{ connector_name }}/prd.md"
+    outputs:
+      - path: "connectors/{{ connector_name }}/plan.md"
+        description: "Implementation plan — tasks, test strategy, dependencies"
+    done_signal:
+      file: "connectors/{{ connector_name }}/plan.md"
+      contains: "PLAN COMPLETE"
+    prompts:
+      system: |
+        You are a senior Python engineer planning a Prefect 3.x connector flow.
+        Given the PRD, produce:
+        1. Prefect task breakdown (extract, validate, transform, load, audit)
+        2. Schema validation strategy (pydantic or jsonschema)
+        3. Test plan (unit fixtures, integration mock endpoints)
+        4. Rollback / idempotency design
+        End with: PLAN COMPLETE
+      user: "{{ prd_md_content }}"
+
+  # ---------------------------------------------------------------------------
+  # Phase 4 — Build
+  # Scaffold and implement the Prefect flow.
+  # ---------------------------------------------------------------------------
+  - id: build
+    name: "Build"
+    description: >
+      Run the scaffold generator then implement the connector flow.
+      TDD cycle: write failing tests first, implement until green.
+    inputs:
+      - path: "connectors/{{ connector_name }}/plan.md"
+      - spec:
+          source_schema: "{{ source_schema }}"
+          dest_schema: "{{ dest_schema }}"
+          transform_config: "{{ transform_config }}"
+    outputs:
+      - path: "connectors/{{ connector_name }}/flow.py"
+        description: "Prefect flow — extract / transform / load tasks"
+      - path: "connectors/{{ connector_name }}/schemas.py"
+        description: "Pydantic models for source and destination schemas"
+      - path: "tests/connectors/test_{{ connector_name }}.py"
+        description: "Unit tests for this connector"
+    done_signal:
+      command: "pytest tests/connectors/test_{{ connector_name }}.py -x -q"
+      exit_code: 0
+    scaffold_command: >
+      python -m devflow.connector_scaffold
+        --name {{ connector_name }}
+        --source-schema connectors/{{ connector_name }}/source_schema.json
+        --dest-schema connectors/{{ connector_name }}/dest_schema.json
+        --transform-config connectors/{{ connector_name }}/transform.yaml
+        --out-dir connectors/{{ connector_name }}
+
+  # ---------------------------------------------------------------------------
+  # Phase 5 — QA
+  # Run integration tests against mock endpoints.
+  # ---------------------------------------------------------------------------
+  - id: qa
+    name: "QA"
+    description: >
+      Spin up mock source and destination endpoints, run the full connector
+      flow, assert row counts and data integrity against PRD acceptance criteria.
+    inputs:
+      - path: "connectors/{{ connector_name }}/flow.py"
+      - path: "connectors/{{ connector_name }}/prd.md"
+    outputs:
+      - path: "connectors/{{ connector_name }}/qa-report.md"
+        description: "QA report — pass/fail for each acceptance criterion"
+    done_signal:
+      command: "pytest tests/connectors/test_integration.py -k {{ connector_name }} -q"
+      exit_code: 0
+    environment:
+      CONNECTOR_NAME: "{{ connector_name }}"
+      MOCK_SOURCE_PORT: "{{ mock_source_port | default('18801') }}"
+      MOCK_DEST_PORT: "{{ mock_dest_port | default('18802') }}"
+
+  # ---------------------------------------------------------------------------
+  # Phase 6 — Deploy
+  # Register the flow with Prefect and run it in production.
+  # ---------------------------------------------------------------------------
+  - id: deploy
+    name: "Deploy"
+    description: >
+      Deploy the connector flow to Prefect Cloud / Server, verify the
+      deployment, and trigger a first run.
+    inputs:
+      - path: "connectors/{{ connector_name }}/flow.py"
+    outputs:
+      - path: "connectors/{{ connector_name }}/deploy.md"
+        description: "Deploy log — deployment ID, first run ID, result"
+    done_signal:
+      file: "connectors/{{ connector_name }}/deploy.md"
+      contains: "DEPLOY COMPLETE"
+    deploy_command: >
+      prefect deploy connectors/{{ connector_name }}/flow.py:connector_flow
+        --name {{ connector_name }}
+        --pool {{ work_pool | default('default-agent-pool') }}
+
+# ---------------------------------------------------------------------------
+# Global settings applied to all phases
+# ---------------------------------------------------------------------------
+settings:
+  retry_on_failure: true
+  max_retries: 2
+  windows_compatible: true          # no Unix-only shell constructs
+  python_min_version: "3.11"
+  prefect_min_version: "3.0.0"
+  virtualenv: ".venv"               # relative to project root
