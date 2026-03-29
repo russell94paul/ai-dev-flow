@@ -254,6 +254,91 @@ def run(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# devflow deploy
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def deploy(
+    issue_id: Annotated[str, typer.Argument(help="Paperclip issue UUID")],
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Parse deployment YAML without running Prefect"),
+    ] = False,
+    cwd: Annotated[
+        Optional[str],
+        typer.Option("--cwd", help="Working directory for prefect deploy (default: current dir)"),
+    ] = None,
+):
+    """
+    Run the Prefect deploy stage for a Paperclip issue.
+
+    Reads the ``deployment`` document from the issue, applies it with
+    ``prefect deploy``, runs a smoke test, and reports back to Paperclip.
+
+    Requires PAPERCLIP_API_KEY (or PAPERCLIP_COMPANY_ID) and PREFECT_API_URL.
+    See docs/runbook-prefect-creds.md for setup.
+    """
+    import asyncio
+    from devflow.deploy import run_deploy
+    from devflow.paperclip import client_from_env
+
+    run_id = os.environ.get("PAPERCLIP_RUN_ID", "")
+    pc = client_from_env(run_id=run_id)
+    if pc is None:
+        console.print(
+            "[red]✗[/red] Paperclip credentials not configured. "
+            "Set PAPERCLIP_API_KEY or see docs/runbook-prefect-creds.md."
+        )
+        raise typer.Exit(1)
+
+    async def _run() -> None:
+        async with pc:
+            console.print(f"[dim]Deploy issue:[/dim] {issue_id}")
+            result = await run_deploy(
+                issue_id=issue_id,
+                pc=pc,
+                dry_run=dry_run,
+                repo_cwd=cwd,
+            )
+            if result.success:
+                console.print(f"[green]✓[/green] {result.message}")
+                if not dry_run:
+                    await pc.update_issue(
+                        issue_id,
+                        status="done",
+                        comment=(
+                            "## Deploy complete\n\n"
+                            f"{result.message}\n\n"
+                            f"- State: `{result.state}`\n"
+                            f"- Run URL: {result.run_url}"
+                        ),
+                    )
+                    console.print("[green]✓[/green] Paperclip issue marked done.")
+            else:
+                console.print(f"[red]✗[/red] {result.message}")
+                if not dry_run:
+                    stdout_block = (
+                        f"\n\n### prefect deploy output\n```\n{result.deploy_stdout}\n```"
+                        if result.deploy_stdout
+                        else ""
+                    )
+                    await pc.update_issue(
+                        issue_id,
+                        status="blocked",
+                        comment=(
+                            "## Deploy blocked\n\n"
+                            f"{result.message}"
+                            f"{stdout_block}"
+                        ),
+                    )
+                    console.print("[yellow]⚠[/yellow] Paperclip issue marked blocked.")
+                raise typer.Exit(1)
+
+    asyncio.run(_run())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # devflow heartbeat
 # ─────────────────────────────────────────────────────────────────────────────
 
