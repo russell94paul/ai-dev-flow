@@ -6,3 +6,7 @@ node_modules/
 config.local
 __pycache__/
 *.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
