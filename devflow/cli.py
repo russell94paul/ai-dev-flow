@@ -1396,6 +1396,142 @@ def metrics(
     raise typer.Exit(1)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# devflow sync
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.command()
+def sync(
+    issue_id: Annotated[str, typer.Argument(help="Paperclip issue UUID")],
+    migrate_v3: Annotated[
+        bool,
+        typer.Option("--migrate-v3", help="Migrate this issue from v2 to v3 pipeline schema"),
+    ] = False,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Write stubs, update state, upload to Paperclip (default: dry-run)"),
+    ] = False,
+    slug: Annotated[
+        Optional[str],
+        typer.Option("--slug", help="Feature slug (derived from issue title if not provided)"),
+    ] = None,
+    dir_: Annotated[
+        Optional[str],
+        typer.Option("--dir", help="Feature directory (default: ./features/<slug>)"),
+    ] = None,
+):
+    """
+    Sync a Paperclip issue with the local devflow pipeline state.
+
+    --migrate-v3   Map v2 phase → v3, check/stub missing artifacts,
+                   write migration-report.md.
+
+    --apply        Write stub files, update Paperclip state document to v3
+                   schema, and post a migration comment. Without --apply
+                   this is a dry-run that only writes migration-report.md
+                   locally.
+
+    Requires PAPERCLIP_API_KEY.
+    """
+    import asyncio
+    from pathlib import Path
+
+    if not migrate_v3:
+        console.print("[yellow]⚠[/yellow] No operation specified. Use [bold]--migrate-v3[/bold].")
+        raise typer.Exit(1)
+
+    async def _run() -> None:
+        from devflow.paperclip import client_from_env
+        from devflow.migrate import migrate_issue, build_v3_state, build_migration_comment
+
+        config = Config()
+        if not config.paperclip_enabled:
+            console.print("[red]✗[/red] PAPERCLIP_API_KEY is not set.")
+            raise typer.Exit(1)
+
+        pc = client_from_env()
+        async with pc:
+            if not await pc.check_health():
+                console.print(
+                    f"[red]✗[/red] Paperclip unreachable at [cyan]{config.paperclip_url}[/cyan]"
+                )
+                raise typer.Exit(1)
+
+            try:
+                issue = await pc.get_issue(issue_id)
+            except Exception as exc:
+                console.print(f"[red]✗[/red] Could not fetch issue {issue_id}: {exc}")
+                raise typer.Exit(1)
+
+            feature_slug = slug or _make_slug(issue.title)
+            feature_dir = Path(dir_) if dir_ else Path("features") / feature_slug
+
+            console.rule(f"[bold #d946ef]devflow sync --migrate-v3[/] — {issue.identifier}")
+            console.print(
+                f"\n  Issue:  [cyan]{issue.identifier}[/cyan] — {issue.title}\n"
+                f"  Slug:   {feature_slug}\n"
+                f"  Dir:    {feature_dir}\n"
+                f"  Mode:   {'[bold green]apply[/bold green]' if apply else '[dim]dry-run[/dim]'}\n"
+            )
+
+            v2_state = await pc.load_state(issue_id)
+            if v2_state:
+                console.print(f"  [dim]v2 state loaded (phase: {v2_state.get('phase', '(none)')})[/dim]\n")
+            else:
+                console.print("  [dim]No existing state document — treating as new issue[/dim]\n")
+
+            result = migrate_issue(
+                issue_id=issue_id,
+                slug=feature_slug,
+                feature_dir=feature_dir,
+                v2_state=v2_state,
+                apply=apply,
+            )
+
+            console.print(f"[bold]Phase:[/bold] {result.v2_phase} → [green]{result.v3_phase}[/green]\n")
+            console.print("[bold]Artifacts:[/bold]")
+            for a in result.artifacts:
+                colour = {"present": "green", "partial": "yellow", "absent": "red"}.get(a.status, "white")
+                stub_tag = " [dim](stub written)[/dim]" if a.stub_written else ""
+                missing_tag = (
+                    f" [dim]missing: {', '.join(a.missing_sections)}[/dim]"
+                    if a.missing_sections and not a.stub_written else ""
+                )
+                console.print(f"  [{colour}]{a.status:8}[/{colour}]  {a.path}{stub_tag}{missing_tag}")
+
+            if result.pending_artifacts:
+                console.print(
+                    f"\n  [dim]{len(result.pending_artifacts)} artifact(s) pending "
+                    f"(not due at {result.v3_phase} phase)[/dim]"
+                )
+
+            if apply:
+                v3_state = build_v3_state(v2_state, result.v3_phase)
+                await pc.save_state(issue_id, v3_state)
+                console.print(f"\n  [green]✓[/green] State document updated to v3 schema")
+
+                comment = build_migration_comment(result)
+                await pc.post_comment(issue_id, comment)
+                console.print(f"  [green]✓[/green] Migration comment posted")
+
+                if result.report_path:
+                    console.print(f"  [green]✓[/green] Migration report → {result.report_path}")
+
+                console.rule()
+                console.print(
+                    f"\n[bold green]Migration complete.[/bold green]  "
+                    f"Next: [cyan]devflow gate --entering {result.v3_phase} --slug {feature_slug}[/cyan]\n"
+                )
+            else:
+                console.rule("[dim]dry-run — no Paperclip changes made[/dim]")
+                console.print(
+                    f"\nTo apply: "
+                    f"[cyan]devflow sync {issue_id} --migrate-v3 --apply --slug {feature_slug}[/cyan]\n"
+                )
+
+    asyncio.run(_run())
+
+
 def _find_devflow_yaml() -> "Optional[Path]":
     """Walk up from cwd to find devflow.yaml."""
     from pathlib import Path
