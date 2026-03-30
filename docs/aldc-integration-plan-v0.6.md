@@ -998,7 +998,7 @@ This ensures compliance metrics reflect v3 pipeline health, not legacy debt.
 | 9 | `devflow metrics` CLI | ✅ Done | `devflow/metrics.py`; `devflow/cli.py` |
 | 10 | New skills: security-review, architecture-diagrams, code-review, qa, deploy | ✅ Done | `skills/security-review/SKILL.md`, `skills/architecture-diagrams/SKILL.md`, `skills/code-review/SKILL.md`, `skills/qa/SKILL.md`, `skills/deploy/SKILL.md` |
 | 11 | Connector skills: connector-build + extensions | ✅ Done | `skills/connector-build/SKILL.md` |
-| 12 | Agent refactor: feature/builder/reviewer/qa/sre + CEO | 🔲 Todo | `agents/*/AGENTS.md` |
+| 12 | Agent refactor: feature/builder/reviewer/qa/sre + CEO | ✅ Done | `agents/devflow-feature/AGENTS.md` (rewritten), `agents/devflow-builder/AGENTS.md`, `agents/devflow-reviewer/AGENTS.md`, `agents/devflow-qa/AGENTS.md`, `agents/devflow-sre/AGENTS.md`, `agents/devflow-ceo/AGENTS.md` |
 | 13 | PRD + plan + tdd skill modifications | 🔲 Todo | `skills/write-a-prd/`, `skills/prd-to-plan/`, `skills/tdd/` |
 | 14 | Model tier config + state enforcement | ✅ Done | `devflow/config.py` (model_haiku/sonnet/opus); `devflow/api.py` (per-call model override) |
 | 15 | Waiver system in `devflow gate` | 🔲 Todo | `devflow/gatekeeper.py` (stub exists; full Paperclip comment-based waivers deferred) |
