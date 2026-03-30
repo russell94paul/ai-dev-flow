@@ -1,74 +1,121 @@
 ---
 name: write-a-prd
-description: Create a PRD through user interview, codebase exploration, and module design, then submit as a GitHub issue. Use when user wants to write a PRD, create a product requirements document, or plan a new feature.
+description: Create a PRD through user interview, codebase exploration, and module design, then write specs/prd.md. Use when user wants to write a PRD, create a product requirements document, or plan a new feature.
 ---
 
-This skill will be invoked when the user wants to create a PRD. You may skip steps if you don't consider them necessary.
+# Write a PRD
 
-1. Ask the user for a long, detailed description of the problem they want to solve and any potential ideas for solutions.
+Produces `specs/prd.md` (relative to the feature root). Called by `devflow-feature` during the PRD phase.
 
-2. Explore the repo to verify their assertions and understand the current state of the codebase.
+You may skip steps if you don't consider them necessary for simpler requests.
 
-3. Interview the user relentlessly about every aspect of this plan until you reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one.
+## Process
 
-4. Sketch out the major modules you will need to build or modify to complete the implementation. Actively look for opportunities to extract deep modules that can be tested in isolation.
+### 1. Gather requirements
 
-A deep module (as opposed to a shallow module) is one which encapsulates a lot of functionality in a simple, testable interface which rarely changes.
+Ask the user for a long, detailed description of the problem they want to solve and any potential ideas for solutions.
 
-Check with the user that these modules match their expectations. Check with the user which modules they want tests written for.
+### 2. Explore the codebase
 
-5. Once you have a complete understanding of the problem and solution, use the template below to write the PRD. The PRD should be submitted as a GitHub issue.
+Verify the user's assertions and understand the current state of the codebase before proposing scope.
 
-<prd-template>
+### 3. Interview until shared understanding
 
-## Problem Statement
+Interview the user relentlessly about every aspect of this plan. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one.
 
-The problem that the user is facing, from the user's perspective.
+### 4. Sketch modules
 
-## Solution
+Identify the major modules to build or modify. Actively look for opportunities to extract **deep modules** — small interface, deep implementation, testable in isolation.
 
-The solution to the problem, from the user's perspective.
+Check with the user that the modules match their expectations and which ones need tests.
+
+### 5. Determine feature type and security triggers
+
+**Feature type** — classify before writing the PRD (used by all downstream gates):
+- `connector` — data pipeline, ETL, integration, webhook, or external API sync
+- `bugfix` — fixing a defect; not adding new behaviour
+- `refactor` — restructuring without behaviour change
+- `new_feature` — everything else
+
+**Security trigger** — set `security_triggered: true` if any of the following are true:
+- PRD body mentions: `auth`, `PII`, `payment`, `credentials`, `secret`
+- Feature touches: authentication, session management, permissions, data migrations, new API endpoints, external integrations
+- Feature type is `connector` (always triggers security review)
+
+Record both in the Paperclip state document if running in a Paperclip heartbeat.
+
+### 6. Write `specs/prd.md`
+
+Create `specs/` if it doesn't exist. Write `specs/prd.md` using the template below. Overwrite on each run.
+
+Also upload to Paperclip: `PUT /api/issues/{id}/documents/prd`
+
+---
+
+## Output: `specs/prd.md`
+
+`devflow seal --completing prd` validates that **all five required sections** are present. Do not omit any of them.
+
+```markdown
+# PRD: <Feature Name>
+
+**Feature type:** <new_feature|bugfix|connector|refactor>
+**Security triggered:** <true|false>
+
+## Goal
+
+One sentence: what user outcome does this feature deliver?
+
+## Background
+
+Why is this feature needed? What problem does it solve? What is the current state that makes this painful?
+
+## Scope
+
+**In scope:**
+- <bullet>
+
+**Out of scope:**
+- <bullet>
+
+## Acceptance Criteria
+
+Numbered, testable criteria. Each must be verifiable by a test or a manual check.
+
+1. <criterion>
+2. <criterion>
+
+## API Contracts
+
+*(Include this section when the feature creates or changes any API endpoints. Omit only if no endpoints are touched.)*
+
+| Endpoint | Method | Request | Response | Auth required |
+|---|---|---|---|---|
+| `/api/<resource>` | POST | `{field: type}` | `{id: string}` | Yes |
+
+## Security Scope
+
+State whether a security review is triggered and why. This section is required even when security is not triggered — write "Not triggered: <reason>" in that case.
+
+Examples:
+- "Triggered: feature adds auth endpoints and handles user credentials."
+- "Not triggered: read-only config change with no user input or external API calls."
 
 ## User Stories
 
-A LONG, numbered list of user stories. Each user story should be in the format of:
+Numbered list. Each: "As a <actor>, I want <feature>, so that <benefit>."
 
-1. As an <actor>, I want a <feature>, so that <benefit>
-
-<user-story-example>
-1. As a mobile bank customer, I want to see balance on my accounts, so that I can make better informed decisions about my spending
-</user-story-example>
-
-This list of user stories should be extremely extensive and cover all aspects of the feature.
-
-## Implementation Decisions
-
-A list of implementation decisions that were made. This can include:
-
-- The modules that will be built/modified
-- The interfaces of those modules that will be modified
-- Technical clarifications from the developer
-- Architectural decisions
-- Schema changes
-- API contracts
-- Specific interactions
-
-Do NOT include specific file paths or code snippets. They may end up being outdated very quickly.
+1. As a ...
 
 ## Testing Decisions
 
-A list of testing decisions that were made. Include:
-
-- A description of what makes a good test (only test external behavior, not implementation details)
-- Which modules will be tested
-- Prior art for the tests (i.e. similar types of tests in the codebase)
-
-## Out of Scope
-
-A description of the things that are out of scope for this PRD.
+- What makes a good test for this feature (external behaviour, not implementation)
+- Which modules will need tests
+- Any prior art in the codebase for similar tests
 
 ## Further Notes
 
-Any further notes about the feature.
+Any constraints, open questions, or dependencies not covered above.
+```
 
-</prd-template>
+**Fill every required section (Goal, Background, Scope, Acceptance Criteria, Security Scope) with real data. Do not leave placeholder text in these sections.**
