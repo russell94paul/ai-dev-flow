@@ -1253,11 +1253,12 @@ def publish_artifacts(
     """
     import asyncio
     from pathlib import Path
-    from devflow.artifact_publisher import publish_artifacts as _publish, PHASE_ARTIFACTS
+    from devflow.artifact_publisher import publish_artifacts as _publish
+    from devflow.contract import PHASES
 
     feature_dir = Path(dir) if dir else Path.cwd() / "features" / slug
 
-    valid_phases = list(PHASE_ARTIFACTS.keys())
+    valid_phases = PHASES
     if phase not in valid_phases:
         console.print(
             f"[red]✗[/red] Unknown phase [bold]{phase}[/bold]. "
