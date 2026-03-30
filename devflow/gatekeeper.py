@@ -19,6 +19,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from devflow.contract import artifact_path
+from devflow.contract import required_sections as _artifact_sections
+
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -47,20 +50,8 @@ class SealResult:
 # Schemas
 # ---------------------------------------------------------------------------
 
-PRD_REQUIRED_SECTIONS = [
-    "## Goal",
-    "## Background",
-    "## Scope",
-    "## Acceptance Criteria",
-    "## Security Scope",
-]
-
-PLAN_REQUIRED_SECTIONS = [
-    "## Phases",
-    "## ADRs",
-    "## Rollback",
-    "## Verification Commands",
-]
+PRD_REQUIRED_SECTIONS = _artifact_sections("prd")
+PLAN_REQUIRED_SECTIONS = _artifact_sections("plan")
 
 IRON_LAW_PATTERNS = [
     re.compile(r"PASSED \d+"),
@@ -261,7 +252,7 @@ def gate_phase(
                 "state.prd_complete is not set",
                 "Run: devflow skill write-a-prd",
             )
-        prd_path = feature_dir / "specs" / "prd.md"
+        prd_path = feature_dir / artifact_path("prd")
         if not prd_path.exists():
             _fail(
                 "artifact missing: specs/prd.md",
@@ -282,7 +273,7 @@ def gate_phase(
                 "state.plan_approved is not set",
                 "Post review request; set issue to in_review; wait for human approval",
             )
-        plan_path = feature_dir / "plans" / "plan.md"
+        plan_path = feature_dir / artifact_path("plan")
         if not plan_path.exists():
             _fail(
                 "artifact missing: plans/plan.md",
@@ -311,7 +302,7 @@ def gate_phase(
                 "state.iron_law_met is not set",
                 "Run: devflow skill tdd <slug>",
             )
-        if not _check_artifact("build/tdd-summary.md"):
+        if not _check_artifact(artifact_path("tdd-summary")):
             _fail(
                 "artifact missing: build/tdd-summary.md",
                 "Run responsible skill to produce the artifact",
@@ -323,7 +314,7 @@ def gate_phase(
                 "state.review_passed is not set",
                 "Open builder subtask with reviewer findings",
             )
-        if not _check_artifact("ops/review-report.md"):
+        if not _check_artifact(artifact_path("review-report")):
             _fail(
                 "artifact missing: ops/review-report.md",
                 "Run responsible skill to produce the artifact",
@@ -342,21 +333,21 @@ def gate_phase(
                 "Post findings; notify human; set issue to blocked",
             )
         # Required artifacts
-        if not _check_artifact("qa/evidence.md"):
+        if not _check_artifact(artifact_path("qa-evidence")):
             _fail(
                 "artifact missing: qa/evidence.md",
                 "Run responsible skill to produce the artifact",
             )
         # Security review artifact (only required when security was triggered)
         if state.get("security_triggered"):
-            if not _check_artifact("qa/security-review.md"):
+            if not _check_artifact(artifact_path("security-review")):
                 _fail(
                     "artifact missing: qa/security-review.md (security_triggered=true)",
                     "Run responsible skill to produce the artifact",
                 )
         # Connector extra checks
         if resolved_feature_type == "connector":
-            evidence_path = feature_dir / "qa" / "evidence.md"
+            evidence_path = feature_dir / artifact_path("qa-evidence")
             evidence_text = _read_file(evidence_path) or ""
             if not _has_section(evidence_text, "## Connector QA"):
                 _fail(
@@ -377,7 +368,7 @@ def gate_phase(
                 "state.artifact_contract_met is not set",
                 "Run responsible skill to produce the artifact",
             )
-        if not _check_artifact("ops/verification-manifest.json"):
+        if not _check_artifact(artifact_path("verification-manifest")):
             _fail(
                 "artifact missing: ops/verification-manifest.json",
                 "Run responsible skill to produce the artifact",
@@ -458,7 +449,7 @@ def seal_phase(
             )
 
     elif phase == "prd":
-        text = _require_file("specs/prd.md")
+        text = _require_file(artifact_path("prd"))
         if text is not None:
             missing = _missing_sections(text, PRD_REQUIRED_SECTIONS)
             if missing:
@@ -468,7 +459,7 @@ def seal_phase(
                 )
 
     elif phase == "plan":
-        text = _require_file("plans/plan.md")
+        text = _require_file(artifact_path("plan"))
         if text is not None:
             missing = _missing_sections(text, PLAN_REQUIRED_SECTIONS)
             if missing:
@@ -491,7 +482,7 @@ def seal_phase(
                     waivers.append("diagrams: waived by --waive-diagrams flag")
 
     elif phase == "build":
-        text = _require_file("build/tdd-summary.md")
+        text = _require_file(artifact_path("tdd-summary"))
         if text is not None:
             if not _has_section(text, "## Test Output"):
                 _fail(
@@ -511,7 +502,7 @@ def seal_phase(
                     state_updates["iron_law_met"] = True
 
     elif phase == "review":
-        text = _require_file("ops/review-report.md")
+        text = _require_file(artifact_path("review-report"))
         if text is not None:
             decision = _extract_field_value(text, "Decision")
             if decision is None:
@@ -531,7 +522,7 @@ def seal_phase(
                 )
 
     elif phase == "qa":
-        text = _require_file("qa/evidence.md")
+        text = _require_file(artifact_path("qa-evidence"))
         if text is not None:
             tier = _extract_field_value(text, "Tier")
             if tier is None:
@@ -601,7 +592,7 @@ def seal_phase(
                 )
 
     elif phase == "security":
-        text = _require_file("qa/security-review.md")
+        text = _require_file(artifact_path("security-review"))
         if text is not None:
             max_sev = _extract_field_value(text, "max_severity")
             if max_sev is None:
@@ -626,7 +617,7 @@ def seal_phase(
                 )
 
     elif phase == "deploy":
-        text = _require_file("ops/deploy-steps.md")
+        text = _require_file(artifact_path("deploy-steps"))
         if text is not None:
             # Check ## Rollback section has ≥ 1 non-empty line of content
             if not _has_section(text, "## Rollback"):
@@ -656,6 +647,10 @@ def seal_phase(
                         "ops/deploy-steps.md '## Health Checks' section has no content (≥ 1 non-empty line required)",
                         "Re-run the responsible skill targeting only the missing sections",
                     )
+
+    elif phase == "done":
+        _require_file(artifact_path("verification-manifest"))
+        state_updates["artifact_contract_met"] = True
 
     else:
         _fail(
@@ -716,6 +711,9 @@ def _write_manifest(
         "waivers": result.waivers,
         "warnings": result.warnings,
     }
+
+    if phase == "done":
+        existing["artifact_contract_met"] = True
 
     manifest_path.write_text(
         json.dumps(existing, indent=2, ensure_ascii=False),

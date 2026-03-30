@@ -20,39 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-# ---------------------------------------------------------------------------
-# Artifact map
-# ---------------------------------------------------------------------------
-
-PHASE_ARTIFACTS: dict[str, list[dict]] = {
-    "grill": [],
-    "prd": [
-        {"key": "prd", "path": "specs/prd.md", "critical": False},
-    ],
-    "plan": [
-        {"key": "plan", "path": "plans/plan.md", "critical": False},
-        {"key": "architecture", "path": "ops/architecture.md", "critical": False},
-    ],
-    "build": [
-        {"key": "tdd-summary", "path": "build/tdd-summary.md", "critical": False},
-    ],
-    "review": [
-        {"key": "review-report", "path": "ops/review-report.md", "critical": True},
-    ],
-    "qa": [
-        {"key": "qa-evidence", "path": "qa/evidence.md", "critical": False},
-    ],
-    "security": [
-        {"key": "security-review", "path": "qa/security-review.md", "critical": True},
-    ],
-    "deploy": [
-        {"key": "deploy-steps", "path": "ops/deploy-steps.md", "critical": False},
-        {"key": "verification-manifest", "path": "ops/verification-manifest.json", "critical": True},
-    ],
-    "done": [
-        {"key": "verification-manifest", "path": "ops/verification-manifest.json", "critical": True},
-    ],
-}
+from devflow.contract import artifacts_for_phase
 
 # Severity levels in ascending order (matches gatekeeper.py).
 _SEVERITY_ORDER = ["none", "low", "medium", "high", "critical"]
@@ -125,7 +93,7 @@ def _is_critical(artifact: dict, local_text: Optional[str]) -> bool:
     if artifact["key"] == "security-review" and local_text is not None:
         severity = _extract_max_severity(local_text)
         return _severity_at_least_medium(severity)
-    return bool(artifact["critical"])
+    return bool(artifact["blocking_upload"])
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +106,7 @@ async def publish_artifacts(
     phase: str,
     feature_dir: Path,
     pc,  # PaperclipClient — passed in; no import here
+    feature_type: str = "new_feature",
 ) -> PublishResult:
     """
     Upload all artifacts defined for ``phase`` to Paperclip and record the
@@ -157,7 +126,7 @@ async def publish_artifacts(
     """
     result = PublishResult(phase=phase)
 
-    artifacts = PHASE_ARTIFACTS.get(phase, [])
+    artifacts = artifacts_for_phase(phase, feature_type)
     if not artifacts:
         return result
 
