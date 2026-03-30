@@ -1043,25 +1043,33 @@ def gate(
     import asyncio
     from pathlib import Path
     from devflow.gatekeeper import gate_phase
+    from devflow.waivers import (
+        load_authority_list,
+        parse_gate_waivers,
+        validate_waiver,
+    )
 
     feature_dir = Path(dir) if dir else Path.cwd() / "features" / slug
 
-    # Load state — try Paperclip first, fall back to local
+    # Load state and comments — try Paperclip first, fall back to local
     state: dict = {}
+    raw_comments: list = []
     if issue_id:
         config = Config()
         if config.paperclip_enabled:
             from devflow.paperclip import client_from_env
 
-            async def _fetch_state() -> dict:
+            async def _fetch_state_and_comments() -> tuple:
                 pc = client_from_env()
                 if pc is None:
-                    return {}
+                    return {}, []
                 async with pc:
-                    return await pc.load_state(issue_id)
+                    s = await pc.load_state(issue_id)
+                    c = await pc.list_comments(issue_id)
+                    return s, c
 
             try:
-                state = asyncio.run(_fetch_state())
+                state, raw_comments = asyncio.run(_fetch_state_and_comments())
             except Exception:
                 pass
 
@@ -1074,21 +1082,40 @@ def gate(
             except Exception:
                 pass
 
+    # Parse and validate GATE-WAIVER comments
+    authority_list = load_authority_list(_find_devflow_yaml())
+    parsed_waivers = parse_gate_waivers(raw_comments)
+    valid_waivers = [w for w in parsed_waivers if validate_waiver(w, authority_list)[0]]
+
     result = gate_phase(
         phase=entering,
         feature_dir=feature_dir,
         state=state,
         feature_type=feature_type,
+        waivers=valid_waivers,
     )
 
     if result.passed:
         console.print(f"[green]✓[/green] gate --entering {entering}  PASS")
+        if valid_waivers:
+            for w in valid_waivers:
+                console.print(
+                    f"  [yellow]waiver applied:[/yellow] gate={w['gate']}  "
+                    f"approved-by={w['approved_by']}  expires={w['expires']}"
+                )
+                if w.get("reason"):
+                    console.print(f"  [dim]reason:[/dim] {w['reason']}")
         raise typer.Exit(0)
 
     console.print(f"[red]✗[/red] gate --entering {entering}  BLOCKED\n")
     for failure, recovery in zip(result.failures, result.recoveries):
         console.print(f"  [red]FAIL[/red]  {failure}")
         console.print(f"  [dim]→[/dim]     {recovery}\n")
+    if parsed_waivers and not valid_waivers:
+        console.print(
+            "  [dim]note:[/dim] GATE-WAIVER comment(s) found but none were valid "
+            "(check approved-by, expires, and that the poster is human)\n"
+        )
     raise typer.Exit(1)
 
 

@@ -21,6 +21,7 @@ from typing import Optional
 
 from devflow.contract import artifact_path
 from devflow.contract import required_sections as _artifact_sections
+from devflow.waivers import find_active_waiver
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +211,7 @@ def gate_phase(
     feature_dir: Path,
     state: dict,
     feature_type: Optional[str] = None,
+    waivers: Optional[list] = None,
 ) -> GateResult:
     """
     Read-only precondition check for entering a phase.
@@ -324,9 +326,11 @@ def gate_phase(
         pass  # always allowed when QA starts
 
     elif phase == "deploy":
-        # Severity check
+        # Severity check — waivable via GATE-WAIVER comment or state.waivers
         max_sev = str(state.get("max_severity") or "none").lower()
-        waiver_present = bool(state.get("waivers"))  # basic waiver check (WS15 extends this)
+        state_waiver = bool(state.get("waivers"))
+        comment_waiver = find_active_waiver(waivers or [], "security-severity", []) is not None
+        waiver_present = state_waiver or comment_waiver
         if _severity_exceeds(max_sev, "medium") and not waiver_present:
             _fail(
                 f"state.max_severity is '{max_sev}' (must be none/low/medium or waiver present)",

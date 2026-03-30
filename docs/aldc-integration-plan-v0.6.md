@@ -1001,7 +1001,7 @@ This ensures compliance metrics reflect v3 pipeline health, not legacy debt.
 | 12 | Agent refactor: feature/builder/reviewer/qa/sre + CEO | ✅ Done | `agents/devflow-feature/AGENTS.md` (rewritten), `agents/devflow-builder/AGENTS.md`, `agents/devflow-reviewer/AGENTS.md`, `agents/devflow-qa/AGENTS.md`, `agents/devflow-sre/AGENTS.md`, `agents/devflow-ceo/AGENTS.md` |
 | 13 | PRD + plan + tdd skill modifications | ✅ Done | `skills/write-a-prd/SKILL.md` (v3 template: Goal/Background/Scope/AC/Security Scope/API Contracts); `skills/prd-to-plan/SKILL.md` (Phases/ADRs/Rollback/Verification Commands); `skills/tdd/SKILL.md` (done WS4) |
 | 14 | Model tier config + state enforcement | ✅ Done | `devflow/config.py` (model_haiku/sonnet/opus); `devflow/api.py` (per-call model override) |
-| 15 | Waiver system in `devflow gate` | 🔲 Todo | `devflow/gatekeeper.py` (stub exists; full Paperclip comment-based waivers deferred) |
+| 15 | Waiver system in `devflow gate` | ✅ Done | `devflow/waivers.py` (parse/validate/find); `devflow/gatekeeper.py` + `devflow/cli.py` wired; 31 tests |
 | 16 | Integrated `docs/guidelines.md` (versioned) | 🔲 Todo | `docs/guidelines.md` |
 | 17 | Integration tests | 🔲 Todo | `tests/integration/` |
 | 18 | Pilot rollout (1 connector feature) | 🔲 Todo | Depends on WS17 |
