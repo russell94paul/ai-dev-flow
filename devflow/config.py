@@ -50,6 +50,17 @@ class Config:
         default_factory=lambda: os.environ.get("PAPERCLIP_AGENT_ID", "")
     )
 
+    # Model tier — each tier overridable via env var
+    model_haiku: str = field(
+        default_factory=lambda: os.environ.get("DEVFLOW_MODEL_HAIKU", "claude-haiku-4-5-20251001")
+    )
+    model_sonnet: str = field(
+        default_factory=lambda: os.environ.get("DEVFLOW_MODEL_SONNET", "claude-sonnet-4-6")
+    )
+    model_opus: str = field(
+        default_factory=lambda: os.environ.get("DEVFLOW_MODEL_OPUS", "claude-opus-4-6")
+    )
+
     @property
     def paperclip_enabled(self) -> bool:
         """

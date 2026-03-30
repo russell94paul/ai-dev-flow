@@ -288,6 +288,18 @@ class PaperclipClient:
         data = await self._request("PATCH", f"/api/issues/{issue_id}", json=payload)
         return _parse_issue(data)
 
+    async def list_comments(self, issue_id: str) -> list[dict]:
+        """
+        Fetch all comments on an issue, ordered oldest-first.
+        Returns a list of raw comment dicts (id, body, createdAt, authorId, ...).
+        Returns an empty list if the endpoint is unavailable.
+        """
+        try:
+            data = await self._request("GET", f"/api/issues/{issue_id}/comments")
+            return data if isinstance(data, list) else data.get("comments", [])
+        except Exception:
+            return []
+
     async def post_comment(self, issue_id: str, body: str) -> None:
         """Post a standalone comment without changing issue status."""
         await self._request(
@@ -424,6 +436,56 @@ class PaperclipClient:
             raise PaperclipCheckoutConflict("Attachment conflict (409).")
         resp.raise_for_status()
         return resp.json() if resp.content else {}
+
+    # ------------------------------------------------------------------
+    # Agents
+    # ------------------------------------------------------------------
+
+    async def list_agents(self, company_id: str) -> list[dict]:
+        """
+        List all agents registered for a company.
+        Returns a list of raw agent dicts (id, name, role, ...).
+        """
+        data = await self._request("GET", f"/api/companies/{company_id}/agents")
+        return data if isinstance(data, list) else data.get("agents", [])
+
+    # ------------------------------------------------------------------
+    # Documents (bulk)
+    # ------------------------------------------------------------------
+
+    # Known document keys used by the v2/v3 pipeline. Used as a probe list
+    # when the Paperclip server does not support GET /api/issues/{id}/documents.
+    _KNOWN_DOC_KEYS: list[str] = [
+        "state", "prd", "plan", "tdd-summary", "evidence",
+        "deployment", "connector-checklist", "security-review", "review-report",
+    ]
+
+    async def list_documents(self, issue_id: str) -> list[dict]:
+        """
+        Return all documents attached to an issue.
+
+        Tries GET /api/issues/{id}/documents first. Falls back to probing
+        the known document-key list when that endpoint is unavailable (older
+        Paperclip versions or 404/405 responses).
+        """
+        try:
+            data = await self._request("GET", f"/api/issues/{issue_id}/documents")
+            docs = data if isinstance(data, list) else data.get("documents", [])
+            if docs:
+                return docs
+        except Exception:
+            pass
+
+        # Fallback: probe each known key individually.
+        docs = []
+        for key in self._KNOWN_DOC_KEYS:
+            try:
+                doc = await self.get_document(issue_id, key)
+                doc.setdefault("key", key)
+                docs.append(doc)
+            except Exception:
+                pass
+        return docs
 
     # ------------------------------------------------------------------
     # Approvals

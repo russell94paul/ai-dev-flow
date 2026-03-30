@@ -24,9 +24,9 @@ class StreamUsage:
 
 
 class DevflowClient:
-    def __init__(self, config: "Config"):
+    def __init__(self, config: "Config", model: Optional[str] = None):
         self._client = anthropic.AsyncAnthropic(api_key=config.api_key)
-        self.model = config.model
+        self.model = model or config.model
         self.last_usage: Optional[StreamUsage] = None
 
     async def stream(
@@ -34,6 +34,7 @@ class DevflowClient:
         messages: list[dict],
         system: str = "",
         max_tokens: int = 8096,
+        model: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """
         Async-yield text tokens as they arrive from the API.
@@ -42,7 +43,7 @@ class DevflowClient:
         After the stream completes, self.last_usage is updated with token counts.
         """
         kwargs: dict = dict(
-            model=self.model,
+            model=model or self.model,
             max_tokens=max_tokens,
             messages=messages,
         )

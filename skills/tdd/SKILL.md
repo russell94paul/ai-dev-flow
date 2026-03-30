@@ -106,6 +106,34 @@ After all tests pass, look for [refactor candidates](refactoring.md):
 [ ] No speculative features added
 ```
 
+## Iron Law Checklist
+
+Run this checklist after all cycles are GREEN, before writing `tdd-summary.md`. **All items must pass. The Iron Law cannot be waived.**
+
+```
+[ ] All tests pass — zero RED, zero errors
+[ ] No `# type: ignore` or `# noqa` added without an inline explanation comment on the same line
+[ ] No commented-out code blocks left in the diff
+[ ] Every new function or class has ≥ 1 test covering it
+[ ] No speculative code added (no unused functions, no TODO stubs shipped)
+```
+
+If any item is unchecked: fix it before writing the summary. Do not mark Iron Law as met until all boxes are checked.
+
+## Cognitive Debt & git-blame Checks
+
+Run after the Iron Law checklist:
+
+```
+[ ] Every function I cannot explain in one sentence → refactor or flag for reviewer
+[ ] git log / git blame on every modified existing file:
+      — no prior bug fix reverted by this diff
+      — no logic silently removed that other callers depend on
+[ ] No new abstraction introduced without ≥ 2 concrete use cases in this diff
+```
+
+These are recorded in the `## Design Notes` section of `tdd-summary.md`. Unresolved items are flagged for the Reviewer.
+
 ## Summary Output
 
 When all cycles are complete:
@@ -120,15 +148,18 @@ TDD COMPLETE — summary saved to ./<feature-slug>/tdd-summary.md (tests: N GREE
 
 Do NOT stream test tables, file diffs, or verbose output to the console unless the user asks.
 
-### Write `tdd-summary.md`
+### Write `build/tdd-summary.md`
 
-Write `./<feature-slug>/tdd-summary.md` before printing the console line. Overwrite each run.
+Write `build/tdd-summary.md` (relative to the feature root) before printing the console line. Overwrite each run.
+
+The `## Test Output` section **must contain verbatim test runner output** — copy-paste the exact terminal output. `devflow seal --completing build` validates this section against the Iron Law regex. Do not summarise or paraphrase it.
 
 ```markdown
 # TDD Summary: <feature-slug>
 
 **Timestamp:** <ISO 8601>
-**Plan source:** ./<feature-slug>/plan.md
+**Plan source:** plans/plan.md
+**Iron Law:** PASS
 
 ## Phases completed
 
@@ -142,7 +173,11 @@ Write `./<feature-slug>/tdd-summary.md` before printing the console line. Overwr
 |---|-----------------|--------|
 | 1 | <behavior tested> | ✅ GREEN |
 
-**Total: N GREEN, N RED**
+## Test Output
+
+```
+<verbatim test runner output — e.g. "5 passed in 0.42s">
+```
 
 ## Files touched
 
@@ -151,12 +186,14 @@ Write `./<feature-slug>/tdd-summary.md` before printing the console line. Overwr
 ## Commands run
 
 ```
-<exact test-runner commands>
+<exact test-runner commands used>
 ```
 
 ## Design notes
 
 - <decisions, surprises, tradeoffs>
+- <cognitive debt flags for reviewer, if any>
+- <git-blame findings, if any>
 ```
 
 Fill every section with real data. No placeholder text.

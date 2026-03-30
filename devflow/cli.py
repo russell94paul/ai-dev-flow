@@ -9,6 +9,7 @@ Usage:
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -564,6 +565,663 @@ def setup_paperclip(
 
     import asyncio
     asyncio.run(_run())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# devflow orient
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.command()
+def orient(
+    issue_id: Annotated[str, typer.Argument(help="Paperclip issue UUID")],
+    agent: Annotated[
+        Optional[str],
+        typer.Option("--agent", help="Agent name (e.g. devflow-builder)"),
+    ] = None,
+):
+    """
+    Session context health check — run at the start of every heartbeat.
+
+    Checks proxy signals for stale context, long sessions, fix-break-fix
+    loops, unread comments, and model tier. Validates required tools exist.
+
+    Exit codes:
+      0  OK — proceed
+      1  Hard block — issue cancelled, reassigned, or missing required tools
+      2  Warning — stale session, model tier, or unread comments (logged, proceeds)
+
+    Requires PAPERCLIP_API_KEY.
+    """
+    import asyncio
+    from devflow.orient import run_orient
+
+    async def _run() -> int:
+        from devflow.paperclip import client_from_env
+
+        config = Config()
+        if not config.paperclip_enabled:
+            console.print("[red]✗[/red] PAPERCLIP_API_KEY is not set.")
+            return 1
+
+        pc = client_from_env()
+        async with pc:
+            if not await pc.check_health():
+                console.print(
+                    f"[red]✗[/red] Paperclip unreachable at [cyan]{config.paperclip_url}[/cyan]"
+                )
+                return 1
+
+            result = await run_orient(
+                pc=pc,
+                issue_id=issue_id,
+                agent_name=agent or "",
+            )
+
+        if result.blocked:
+            console.print(f"[red]✗ HARD BLOCK[/red]  {result.hard_block_reason}")
+            if result.warnings:
+                for w in result.warnings:
+                    console.print(f"  [yellow]⚠[/yellow] {w}")
+            return 1
+
+        if result.warnings:
+            for w in result.warnings:
+                console.print(f"[yellow]⚠[/yellow] {w}")
+
+        missing_optional = [t for t, ok in result.tool_check.items() if not ok]
+        if missing_optional:
+            console.print(f"[dim]Optional tools not found: {', '.join(missing_optional)}[/dim]")
+
+        if result.exit_code == 0:
+            console.print(f"[green]✓[/green] orient OK — {issue_id}")
+
+        return result.exit_code
+
+    code = asyncio.run(_run())
+    raise typer.Exit(code)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# devflow export-artifacts
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.command(name="export-artifacts")
+def export_artifacts(
+    all_open: Annotated[
+        bool,
+        typer.Option("--all-open", help="Export documents for all open issues"),
+    ] = False,
+    output: Annotated[
+        str,
+        typer.Option("--output", "-o", help="Output directory (default: ./archive/pre-v3)"),
+    ] = "./archive/pre-v3",
+):
+    """
+    Download all Paperclip documents for open issues to a local archive.
+
+    Creates <output>/<issue-id>/<doc-key>.md for each document found.
+    Run this before devflow ceo-init --apply to preserve pre-v3 artifacts.
+    Requires PAPERCLIP_API_KEY and PAPERCLIP_COMPANY_ID.
+    """
+    import asyncio
+    import json
+    from pathlib import Path
+
+    async def _run() -> None:
+        from devflow.paperclip import client_from_env
+
+        config = Config()
+        if not config.paperclip_enabled:
+            console.print("[red]✗[/red] PAPERCLIP_API_KEY is not set.")
+            raise typer.Exit(1)
+
+        company_id = config.paperclip_company_id
+        if not company_id:
+            console.print("[red]✗[/red] PAPERCLIP_COMPANY_ID is not set.")
+            raise typer.Exit(1)
+
+        if not all_open:
+            console.print(
+                "[yellow]⚠[/yellow] No scope specified. Use [bold]--all-open[/bold] to export all open issues."
+            )
+            raise typer.Exit(1)
+
+        pc = client_from_env()
+        async with pc:
+            if not await pc.check_health():
+                console.print(
+                    f"[red]✗[/red] Paperclip unreachable at [cyan]{config.paperclip_url}[/cyan]"
+                )
+                raise typer.Exit(1)
+
+            issues = await pc.list_issues(
+                company_id,
+                status="todo,unstarted,in_progress,in_review,blocked",
+                limit=200,
+            )
+            if not issues:
+                console.print("[dim]No open issues found.[/dim]")
+                return
+
+            out_root = Path(output)
+            out_root.mkdir(parents=True, exist_ok=True)
+            console.print(
+                f"[cyan]Exporting[/cyan] {len(issues)} open issue(s) → [dim]{out_root}[/dim]"
+            )
+
+            total_docs = 0
+            for issue in issues:
+                issue_dir = out_root / issue.id
+                issue_dir.mkdir(parents=True, exist_ok=True)
+
+                # Write issue metadata
+                meta = {
+                    "id": issue.id,
+                    "identifier": issue.identifier,
+                    "title": issue.title,
+                    "status": issue.status,
+                    "assignee_id": issue.assignee_id,
+                    "project_id": issue.project_id,
+                }
+                (issue_dir / "_issue.json").write_text(
+                    json.dumps(meta, indent=2), encoding="utf-8"
+                )
+
+                docs = await pc.list_documents(issue.id)
+                for doc in docs:
+                    key = doc.get("key") or doc.get("id") or "unknown"
+                    body = doc.get("body", "")
+                    fmt = doc.get("format", "markdown")
+                    ext = "json" if fmt == "json" else "md"
+                    (issue_dir / f"{key}.{ext}").write_text(body or "", encoding="utf-8")
+                    total_docs += 1
+
+                label = f"[green]{issue.identifier}[/green]" if docs else f"[dim]{issue.identifier}[/dim]"
+                console.print(f"  {label} — {len(docs)} doc(s)")
+
+            console.print(
+                f"\n[green]✓[/green] Exported {total_docs} document(s) from {len(issues)} issue(s) to [dim]{out_root}[/dim]"
+            )
+
+    asyncio.run(_run())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# devflow ceo-init
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Legacy agent names to retire in the v3 rollout.
+_LEGACY_AGENT_NAMES = {"devflow-connector-builder", "devflow-prefect-qa"}
+
+# V3 agents to register/verify exist.
+_V3_AGENT_NAMES = {"devflow-builder", "devflow-reviewer", "devflow-qa", "devflow-feature", "devflow-sre"}
+
+
+def _classify_issue(status: str, has_state_doc: bool) -> str:
+    """
+    Classify an open issue for the v3 rollout.
+
+    Returns:
+      'ignore'  — already done/cancelled; no action needed
+      'archive' — close with retirement note
+      'migrate' — keep; run devflow sync <id> --migrate-v3 --apply
+    """
+    if status in ("completed", "done", "cancelled"):
+        return "ignore"
+    if status == "blocked":
+        return "archive"
+    if status in ("in_progress", "in_review"):
+        return "migrate" if has_state_doc else "archive"
+    # unstarted / todo / unknown
+    return "archive"
+
+
+@app.command(name="ceo-init")
+def ceo_init(
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Audit state and preview changes (no writes)"),
+    ] = False,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Execute the v3 rollout changes"),
+    ] = False,
+    archive_all: Annotated[
+        bool,
+        typer.Option(
+            "--archive-all",
+            help="Archive ALL open issues (including those with artifacts). "
+                 "Use when you do not want to carry any pre-v3 issues forward.",
+        ),
+    ] = False,
+):
+    """
+    One-time v3 rollout command.
+
+    --dry-run      Audit open issues (migrate/archive/ignore), list legacy
+                   agents, and preview what --apply would do. Makes no changes.
+
+    --apply        Post retirement notices on legacy-agent issues, cancel open
+                   issues, and post a pinned board announcement.
+
+    --archive-all  Used with --apply. Archives ALL open issues, including those
+                   with existing artifacts (normally classified as 'migrate').
+                   Use this when you are starting v3 clean with no carry-overs.
+
+    Run export-artifacts first to preserve pre-v3 documents.
+    Requires PAPERCLIP_API_KEY and PAPERCLIP_COMPANY_ID.
+    """
+    import asyncio
+    from datetime import date
+
+    if not dry_run and not apply:
+        console.print(
+            "[yellow]⚠[/yellow] Specify [bold]--dry-run[/bold] to audit or [bold]--apply[/bold] to execute."
+        )
+        raise typer.Exit(1)
+
+    if dry_run and apply:
+        console.print("[red]✗[/red] --dry-run and --apply are mutually exclusive.")
+        raise typer.Exit(1)
+
+    async def _run() -> None:
+        from devflow.paperclip import client_from_env
+
+        config = Config()
+        if not config.paperclip_enabled:
+            console.print("[red]✗[/red] PAPERCLIP_API_KEY is not set.")
+            raise typer.Exit(1)
+
+        company_id = config.paperclip_company_id
+        if not company_id:
+            console.print("[red]✗[/red] PAPERCLIP_COMPANY_ID is not set.")
+            raise typer.Exit(1)
+
+        pc = client_from_env()
+        async with pc:
+            if not await pc.check_health():
+                console.print(
+                    f"[red]✗[/red] Paperclip unreachable at [cyan]{config.paperclip_url}[/cyan]"
+                )
+                raise typer.Exit(1)
+
+            console.rule("[bold #d946ef]devflow ceo-init[/] — v3 rollout audit")
+
+            # ── 1. Fetch open issues ──────────────────────────────────────────
+            issues = await pc.list_issues(
+                company_id,
+                status="todo,unstarted,in_progress,in_review,blocked",
+                limit=200,
+            )
+            console.print(f"\n[bold]Issues[/bold] — {len(issues)} open\n")
+
+            classify_results: dict[str, list] = {"migrate": [], "archive": [], "ignore": []}
+            for issue in issues:
+                state_doc = await pc.load_state(issue.id)
+                has_state = bool(state_doc)
+                label = _classify_issue(issue.status, has_state)
+                classify_results[label].append(issue)
+
+                colour = {"migrate": "green", "archive": "yellow", "ignore": "dim"}.get(label, "white")
+                console.print(
+                    f"  [{colour}]{label:8}[/{colour}]  {issue.identifier}  [dim]{issue.status}[/dim]  {issue.title[:60]}"
+                )
+
+            migrate_count = len(classify_results["migrate"])
+            archive_count = len(classify_results["archive"])
+            console.print(
+                f"\n  → {migrate_count} to migrate, {archive_count} to archive, "
+                f"{len(classify_results['ignore'])} to ignore\n"
+            )
+
+            # ── 2. Fetch agent roster ─────────────────────────────────────────
+            console.print("[bold]Agent roster[/bold]")
+            try:
+                all_agents = await pc.list_agents(company_id)
+            except Exception as exc:
+                console.print(f"  [yellow]⚠[/yellow] Could not fetch agent roster: {exc}")
+                all_agents = []
+
+            agent_names = {a.get("name", "") for a in all_agents}
+            legacy_found = [a for a in all_agents if a.get("name", "") in _LEGACY_AGENT_NAMES]
+            missing_v3 = _V3_AGENT_NAMES - agent_names
+
+            for agent in all_agents:
+                name = agent.get("name", agent.get("id", "?"))
+                tag = " [red][LEGACY — to retire][/red]" if name in _LEGACY_AGENT_NAMES else ""
+                console.print(f"  {name}{tag}")
+
+            if missing_v3:
+                console.print(f"\n  [yellow]Missing v3 agents:[/yellow] {', '.join(sorted(missing_v3))}")
+
+            # ── 3. Preview / execute ──────────────────────────────────────────
+            console.print()
+            if dry_run:
+                console.rule("[dim]dry-run — no changes made[/dim]")
+                console.print("\nTo proceed:\n")
+                console.print(
+                    "  1. Export pre-v3 artifacts first:\n"
+                    "     [cyan]devflow export-artifacts --all-open --output ./archive/pre-v3[/cyan]\n"
+                )
+                if migrate_count and not archive_all:
+                    console.print(
+                        f"  2. {migrate_count} issue(s) have existing artifacts (classified [green]migrate[/green]).\n"
+                        "     To archive them all and start v3 clean (recommended):\n"
+                        "     [cyan]devflow ceo-init --apply --archive-all[/cyan]\n\n"
+                        "     To carry them forward into v3 instead (requires WS8):\n"
+                        "     [cyan]devflow sync <issue-id> --migrate-v3 --apply[/cyan]  then\n"
+                        "     [cyan]devflow ceo-init --apply[/cyan]\n"
+                    )
+                else:
+                    console.print(f"  2. When ready: [cyan]devflow ceo-init --apply[/cyan]")
+                return
+
+            # ── apply mode ────────────────────────────────────────────────────
+            if archive_all and classify_results["migrate"]:
+                classify_results["archive"].extend(classify_results["migrate"])
+                classify_results["migrate"] = []
+                console.print(
+                    f"[dim]--archive-all: {len(classify_results['archive'])} issue(s) will be archived "
+                    f"(including those with existing artifacts)[/dim]\n"
+                )
+
+            console.rule("[bold green]Applying v3 rollout[/bold green]")
+
+            rollout_date = date.today().isoformat()
+            retirement_note = (
+                "## v3 pipeline rollout\n\n"
+                f"This issue was assigned to a legacy agent (`{', '.join(_LEGACY_AGENT_NAMES)}`). "
+                "These agents are retired as of the v3 rollout. "
+                "Reassigned to devflow-feature (v3 orchestrator).\n\n"
+                f"Rollout date: {rollout_date}"
+            )
+
+            # Post retirement notices on issues held by legacy agents
+            retired = 0
+            for issue in issues:
+                if issue.assignee_id:
+                    # Check if the assignee is a legacy agent
+                    assigned_agent = next(
+                        (a for a in all_agents if a.get("id") == issue.assignee_id), None
+                    )
+                    if assigned_agent and assigned_agent.get("name", "") in _LEGACY_AGENT_NAMES:
+                        await pc.post_comment(issue.id, retirement_note)
+                        console.print(
+                            f"  [yellow]retired[/yellow]  {issue.identifier} — posted retirement notice"
+                        )
+                        retired += 1
+
+            if retired == 0:
+                console.print("  [dim]No issues assigned to legacy agents — nothing to reassign.[/dim]")
+
+            # Archive issues classified as 'archive'
+            archived = 0
+            for issue in classify_results["archive"]:
+                archive_comment = (
+                    "## v3 rollout — archived\n\n"
+                    "This issue had no in-progress artifacts and is archived as part of the v3 pipeline rollout. "
+                    "If still relevant, create a fresh issue using the v3 issue template.\n\n"
+                    f"Archived: {rollout_date}"
+                )
+                await pc.update_issue(issue.id, status="cancelled", comment=archive_comment)
+                console.print(f"  [dim]archived[/dim]   {issue.identifier} — cancelled + comment posted")
+                archived += 1
+
+            # Post migration reminders on migrate issues
+            for issue in classify_results["migrate"]:
+                await pc.post_comment(
+                    issue.id,
+                    f"## v3 rollout — migration needed\n\n"
+                    f"This issue has existing artifacts and is marked for v3 migration.\n\n"
+                    f"Run: `devflow sync {issue.id} --migrate-v3 --apply`\n\n"
+                    f"Rollout date: {rollout_date}",
+                )
+                console.print(f"  [green]migrate[/green]    {issue.identifier} — migration reminder posted")
+
+            # Post board announcement
+            announcement = (
+                f"## v3 pipeline active\n\n"
+                f"The ai-dev-flow v3 pipeline is now active as of **{rollout_date}**.\n\n"
+                f"**Changes:**\n"
+                f"- Legacy agents retired: {', '.join(sorted(_LEGACY_AGENT_NAMES))}\n"
+                f"- V3 agents active: devflow-feature (orchestrator), devflow-builder, "
+                f"devflow-reviewer, devflow-qa, devflow-sre, devflow-ceo\n"
+                f"- {archived} pre-v3 issues archived\n"
+                f"- {migrate_count} issues flagged for migration\n\n"
+                f"See `docs/aldc-integration-plan-v0.6.md` for the full v3 plan."
+            )
+            # Post to the first open issue as a board-level notice (Paperclip
+            # does not expose a board-level comment endpoint in v1 API).
+            if issues:
+                await pc.post_comment(issues[0].id, announcement)
+                console.print(
+                    f"\n  [green]✓[/green] Pinned announcement posted to {issues[0].identifier}"
+                )
+            else:
+                console.print("\n  [dim]No open issues — announcement skipped.[/dim]")
+
+            console.rule()
+            console.print(
+                f"\n[bold green]ceo-init complete.[/bold green]  "
+                f"{archived} archived · {migrate_count} flagged for migration · "
+                f"{retired} retirement notices posted\n"
+            )
+
+    asyncio.run(_run())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# devflow gate
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.command()
+def gate(
+    entering: Annotated[str, typer.Option("--entering", help="Phase to enter (grill/prd/plan/build/review/qa/security/deploy/done)")],
+    slug: Annotated[str, typer.Option("--slug", help="Feature slug")],
+    issue_id: Annotated[
+        Optional[str],
+        typer.Option("--issue-id", help="Paperclip issue UUID (optional; used to load state)"),
+    ] = None,
+    dir: Annotated[
+        Optional[str],
+        typer.Option("--dir", help="Feature directory (default: ./features/<slug>)"),
+    ] = None,
+    feature_type: Annotated[
+        Optional[str],
+        typer.Option("--feature-type", help="Override state.feature_type (new_feature/bugfix/refactor/connector)"),
+    ] = None,
+):
+    """
+    Read-only precondition check before entering a phase.
+
+    Exit 0 = all checks pass (proceed).
+    Exit 1 = one or more checks failed (blocked).
+
+    State is loaded from Paperclip if PAPERCLIP_API_KEY is set and --issue-id
+    is provided; otherwise falls back to a local state file.
+    """
+    import asyncio
+    from pathlib import Path
+    from devflow.gatekeeper import gate_phase
+
+    feature_dir = Path(dir) if dir else Path.cwd() / "features" / slug
+
+    # Load state — try Paperclip first, fall back to local
+    state: dict = {}
+    if issue_id:
+        config = Config()
+        if config.paperclip_enabled:
+            from devflow.paperclip import client_from_env
+
+            async def _fetch_state() -> dict:
+                pc = client_from_env()
+                if pc is None:
+                    return {}
+                async with pc:
+                    return await pc.load_state(issue_id)
+
+            try:
+                state = asyncio.run(_fetch_state())
+            except Exception:
+                pass
+
+    # Fall back to local state file if Paperclip gave nothing
+    if not state:
+        local_state_path = feature_dir / "ops" / "state.json"
+        if local_state_path.exists():
+            try:
+                state = json.loads(local_state_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+    result = gate_phase(
+        phase=entering,
+        feature_dir=feature_dir,
+        state=state,
+        feature_type=feature_type,
+    )
+
+    if result.passed:
+        console.print(f"[green]✓[/green] gate --entering {entering}  PASS")
+        raise typer.Exit(0)
+
+    console.print(f"[red]✗[/red] gate --entering {entering}  BLOCKED\n")
+    for failure, recovery in zip(result.failures, result.recoveries):
+        console.print(f"  [red]FAIL[/red]  {failure}")
+        console.print(f"  [dim]→[/dim]     {recovery}\n")
+    raise typer.Exit(1)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# devflow seal
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.command()
+def seal(
+    completing: Annotated[str, typer.Option("--completing", help="Phase that just completed (grill/prd/plan/build/review/qa/security/deploy)")],
+    slug: Annotated[str, typer.Option("--slug", help="Feature slug")],
+    issue_id: Annotated[
+        Optional[str],
+        typer.Option("--issue-id", help="Paperclip issue UUID (optional; used to load/save state)"),
+    ] = None,
+    dir: Annotated[
+        Optional[str],
+        typer.Option("--dir", help="Feature directory (default: ./features/<slug>)"),
+    ] = None,
+    waive_coverage: Annotated[
+        bool,
+        typer.Option("--waive-coverage", help="Waive coverage threshold failure (records waiver in manifest)"),
+    ] = False,
+    waive_diagrams: Annotated[
+        bool,
+        typer.Option("--waive-diagrams", help="Waive Mermaid diagram check failure (records waiver in manifest)"),
+    ] = False,
+):
+    """
+    Validate artifacts for a completing phase and write ops/verification-manifest.json.
+
+    Exit 0 = all checks pass (manifest written).
+    Exit 1 = one or more checks failed (manifest NOT written).
+
+    State is loaded from Paperclip if PAPERCLIP_API_KEY is set and --issue-id
+    is provided; any state_updates returned by seal are saved back to Paperclip.
+    """
+    import asyncio
+    import json as _json
+    from pathlib import Path
+    from devflow.gatekeeper import seal_phase
+
+    feature_dir = Path(dir) if dir else Path.cwd() / "features" / slug
+
+    # Load state
+    state: dict = {}
+    if issue_id:
+        config = Config()
+        if config.paperclip_enabled:
+            from devflow.paperclip import client_from_env
+
+            async def _fetch_state() -> dict:
+                pc = client_from_env()
+                if pc is None:
+                    return {}
+                async with pc:
+                    return await pc.load_state(issue_id)
+
+            try:
+                state = asyncio.run(_fetch_state())
+            except Exception:
+                pass
+
+    if not state:
+        local_state_path = feature_dir / "ops" / "state.json"
+        if local_state_path.exists():
+            try:
+                state = _json.loads(local_state_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+    result = seal_phase(
+        phase=completing,
+        slug=slug,
+        issue_id=issue_id or "",
+        feature_dir=feature_dir,
+        state=state,
+        waive_coverage=waive_coverage,
+        waive_diagrams=waive_diagrams,
+    )
+
+    # Print warnings regardless of pass/fail
+    for w in result.warnings:
+        console.print(f"  [yellow]⚠[/yellow]  {w}")
+
+    if result.passed:
+        console.print(f"[green]✓[/green] seal --completing {completing}  PASS")
+        if result.artifacts:
+            console.print(f"  [dim]artifacts:[/dim] {', '.join(result.artifacts)}")
+        if result.waivers:
+            for waiver in result.waivers:
+                console.print(f"  [yellow]waiver:[/yellow] {waiver}")
+
+        # Save state updates back to Paperclip or local state file
+        if result.state_updates:
+            updated_state = {**state, **result.state_updates}
+            saved_to_paperclip = False
+            if issue_id:
+                _config = Config()
+                if _config.paperclip_enabled:
+                    from devflow.paperclip import client_from_env
+
+                    async def _save_state() -> None:
+                        pc = client_from_env()
+                        if pc is None:
+                            return
+                        async with pc:
+                            await pc.save_state(issue_id, updated_state)
+
+                    try:
+                        asyncio.run(_save_state())
+                        saved_to_paperclip = True
+                        console.print(f"  [dim]state updates saved to Paperclip:[/dim] {list(result.state_updates.keys())}")
+                    except Exception as exc:
+                        console.print(f"  [yellow]⚠[/yellow] Could not save state to Paperclip: {exc}")
+
+            if not saved_to_paperclip:
+                # Write to local state file
+                local_state_path = feature_dir / "ops" / "state.json"
+                local_state_path.parent.mkdir(parents=True, exist_ok=True)
+                local_state_path.write_text(
+                    _json.dumps(updated_state, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                console.print(f"  [dim]state updates written to {local_state_path}:[/dim] {list(result.state_updates.keys())}")
+
+        raise typer.Exit(0)
+
+    console.print(f"[red]✗[/red] seal --completing {completing}  FAIL\n")
+    for failure, recovery in zip(result.failures, result.recoveries):
+        console.print(f"  [red]FAIL[/red]  {failure}")
+        console.print(f"  [dim]→[/dim]     {recovery}\n")
+    raise typer.Exit(1)
 
 
 def _find_devflow_yaml() -> "Optional[Path]":
