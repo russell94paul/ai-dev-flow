@@ -10,7 +10,7 @@ needs to happen in one place.
 
 TODO: longer-term, ingest docs/artifact-contract.md directly so the markdown
       table is the authoritative source and this module regenerates from it.
-      For now the dict below mirrors §15 of docs/aldc-integration-plan-v0.6.md.
+      For now the dict below mirrors §15 of docs/aldc-integration-plan-v0.7.md.
 """
 from __future__ import annotations
 

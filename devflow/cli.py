@@ -988,7 +988,7 @@ def ceo_init(
                 f"devflow-reviewer, devflow-qa, devflow-sre, devflow-ceo\n"
                 f"- {archived} pre-v3 issues archived\n"
                 f"- {migrate_count} issues flagged for migration\n\n"
-                f"See `docs/aldc-integration-plan-v0.6.md` for the full v3 plan."
+                f"See `docs/aldc-integration-plan-v0.7.md` for the full v3 plan."
             )
             # Post to the first open issue as a board-level notice (Paperclip
             # does not expose a board-level comment endpoint in v1 API).

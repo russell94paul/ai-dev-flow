@@ -147,7 +147,7 @@
 | Gap | Owner | Workstream |
 |---|---|---|
 | Performance baseline capture (not a hard gate) | `skills/qa/SKILL.md` | WS10 |
-| Integrated guidelines.md (versioned) | `docs/guidelines.md` | WS16 |
+| Integrated guidelines.md (versioned) | ✓ | `docs/guidelines.md` v1.0.0 | WS16 |
 
 ---
 
