@@ -1003,5 +1003,5 @@ This ensures compliance metrics reflect v3 pipeline health, not legacy debt.
 | 14 | Model tier config + state enforcement | ✅ Done | `devflow/config.py` (model_haiku/sonnet/opus); `devflow/api.py` (per-call model override) |
 | 15 | Waiver system in `devflow gate` | ✅ Done | `devflow/waivers.py` (parse/validate/find); `devflow/gatekeeper.py` + `devflow/cli.py` wired; 31 tests |
 | 16 | Integrated `docs/guidelines.md` (versioned) | ✅ Done | `docs/guidelines.md` v1.0.0 — 14 sections; covers philosophy, phases, Iron Law, tiers, waivers, model routing, v2 practices |
-| 17 | Integration tests | 🔲 Todo | `tests/integration/` |
+| 17 | Integration tests | ✅ Done | `tests/integration/test_full_pipeline.py` — 35 tests; full pipeline + all 9 failure/recovery paths; publisher retry + blocking comment; waiver rejection |
 | 18 | Pilot rollout (1 connector feature) | 🔲 Todo | Depends on WS17 |

@@ -126,7 +126,7 @@ def _extract_field_value(text: str, field_name: str) -> Optional[str]:
     Returns stripped value or None if not found.
     """
     pattern = re.compile(
-        r"\*\*" + re.escape(field_name) + r"\*\*\s*:?\s*(.+)",
+        r"\*\*" + re.escape(field_name) + r":?\*\*\s*:?\s*(.+)",
         re.IGNORECASE,
     )
     m = pattern.search(text)
@@ -326,11 +326,12 @@ def gate_phase(
         pass  # always allowed when QA starts
 
     elif phase == "deploy":
-        # Severity check — waivable via GATE-WAIVER comment or state.waivers
+        # Severity check — high is waivable; critical is a hard block
         max_sev = str(state.get("max_severity") or "none").lower()
+        is_critical_sev = max_sev == "critical"
         state_waiver = bool(state.get("waivers"))
         comment_waiver = find_active_waiver(waivers or [], "security-severity", []) is not None
-        waiver_present = state_waiver or comment_waiver
+        waiver_present = (state_waiver or comment_waiver) and not is_critical_sev
         if _severity_exceeds(max_sev, "medium") and not waiver_present:
             _fail(
                 f"state.max_severity is '{max_sev}' (must be none/low/medium or waiver present)",
