@@ -1,5 +1,5 @@
 # WS18 Pilot Runbook — Manual Connector Feature (CLI Layer)
-**Version:** 1.1
+**Version:** 1.2
 **Purpose:** Step-by-step guide for manually running one connector feature through
 the full v3 pipeline using the `devflow` CLI. No Paperclip agent automation required.
 This proves the gate/seal/publish machinery before handing off to agents.
@@ -18,8 +18,6 @@ commands from inside the connector repo. You have two options:
 **Option A — entry point script (recommended):**
 ```bash
 # Add to your shell profile (~/.bashrc or ~/.bash_profile)
-export PATH="/path/to/ai-dev-flow/bin:$PATH"
-# or just alias it:
 alias devflow="python /path/to/ai-dev-flow/devflow/cli.py"
 ```
 
@@ -36,17 +34,14 @@ devflow --help
 
 ### State management
 
-State is stored in two places depending on your setup:
+State is stored in Paperclip (`PAPERCLIP_API_KEY` set + `--issue-id` on every command).
+The `--issue-id` flag is required throughout this runbook — it is how state fields
+written by seal (`iron_law_met`, `max_severity`, etc.) land in Paperclip and are
+readable by the agent layer when you hand over.
 
-- **With Paperclip** (`PAPERCLIP_API_KEY` set + `--issue-id`): state loads from and
-  saves to the Paperclip issue document automatically.
-- **Without Paperclip** (local-only pilot): state falls back to
-  `features/<slug>/ops/state.json`. You edit this file manually between phases
-  for fields that aren't auto-written by seal (e.g. `prd_complete`, `plan_approved`).
-
-The pilot works either way. If you have `PAPERCLIP_API_KEY` set, add
-`--issue-id $ISSUE_ID` to every `gate`, `seal`, and `orient` command and state
-stays in Paperclip automatically.
+Fields that aren't auto-written by seal (`prd_complete`, `plan_approved`,
+`review_passed`) must be set via the Paperclip state document directly or using the
+one-liners provided in each step.
 
 ---
 
@@ -56,15 +51,16 @@ stays in Paperclip automatically.
 
 | Item | Check |
 |---|---|
-| `devflow --help` returns usage | See above |
+| `devflow --help` returns usage | See setup above |
+| `PAPERCLIP_API_KEY` set in environment | `echo $PAPERCLIP_API_KEY` |
 | Connector repo checked out locally | Branch for the new feature |
-| Paperclip issue created (optional for CLI layer pilot) | Note the UUID if using |
+| Paperclip issue created for this feature | Note the UUID |
 
 ### Set your variables
 
 ```bash
 SLUG=my-connector-v2        # short kebab-case slug — your choice
-ISSUE_ID=abc-123-...        # Paperclip issue UUID (omit if local-only pilot)
+ISSUE_ID=abc-123-...        # Paperclip issue UUID — required
 ```
 
 All `devflow` commands below are run from inside the connector repo.
@@ -98,14 +94,11 @@ governance:
     - paulrussell
 ```
 
-Adjust `deploy.steps` to match how this connector is actually deployed. Remove steps
-that don't apply.
+Adjust `deploy.steps` to match how this connector is actually deployed.
 
 ---
 
 ## Step 1 — Initialise Feature Directory
-
-There is no `devflow init` command — create the directory and initial state manually:
 
 ```bash
 mkdir -p features/$SLUG/ops
@@ -126,21 +119,18 @@ Replace `my-connector-v2` with your actual `$SLUG`.
 ## Step 2 — Grill Phase
 
 ```bash
-devflow orient --slug $SLUG          # optional; checks session health
+devflow orient --slug $SLUG --issue-id $ISSUE_ID
 ```
 
-When ready, mark grill complete in the state file:
+When satisfied, mark grill complete and seal:
 
 ```bash
 python -c "
 import json; p='features/$SLUG/ops/state.json'
 s=json.load(open(p)); s['grill_complete']=True; json.dump(s,open(p,'w'),indent=2)
 "
-```
 
-Seal:
-```bash
-devflow seal --completing grill --slug $SLUG
+devflow seal --completing grill --slug $SLUG --issue-id $ISSUE_ID
 ```
 
 Expected: `✓ grill sealed`
@@ -151,36 +141,29 @@ Expected: `✓ grill sealed`
 
 ### Gate
 ```bash
-devflow gate --entering prd --slug $SLUG
+devflow gate --entering prd --slug $SLUG --issue-id $ISSUE_ID
 ```
-Expected: `✓ gate passed`
 
 ### Write the PRD
 
-Run `/write-a-prd` (skill) targeting `features/$SLUG/specs/prd.md`.
+Run `/write-a-prd` → `features/$SLUG/specs/prd.md`
 
-Required sections (seal validates all five):
+Required sections:
 - `## Goal`
 - `## Background`
 - `## Scope`
 - `## Acceptance Criteria`
 - `## Security Scope` ← state explicitly whether security review is triggered
 
-### Seal
+### Seal + mark state + publish
 ```bash
-devflow seal --completing prd --slug $SLUG
-```
+devflow seal --completing prd --slug $SLUG --issue-id $ISSUE_ID
 
-On failure, fix the missing sections and re-run.
-
-### Mark state + publish
-```bash
 python -c "
 import json; p='features/$SLUG/ops/state.json'
 s=json.load(open(p)); s['prd_complete']=True; json.dump(s,open(p,'w'),indent=2)
 "
 
-# Only if PAPERCLIP_API_KEY is set:
 devflow publish-artifacts --phase prd --slug $SLUG --issue-id $ISSUE_ID
 ```
 
@@ -190,7 +173,7 @@ devflow publish-artifacts --phase prd --slug $SLUG --issue-id $ISSUE_ID
 
 ### Gate
 ```bash
-devflow gate --entering plan --slug $SLUG
+devflow gate --entering plan --slug $SLUG --issue-id $ISSUE_ID
 ```
 
 ### Write the plan
@@ -198,25 +181,22 @@ devflow gate --entering plan --slug $SLUG
 Run `/prd-to-plan` → `features/$SLUG/plans/plan.md`
 Run `/architecture-diagrams` → `features/$SLUG/ops/architecture.md`
 
-`plan.md` required sections: `## Phases`, `## ADRs`, `## Rollback`, `## Verification Commands`
+Required sections in `plan.md`: `## Phases`, `## ADRs`, `## Rollback`, `## Verification Commands`
 
 Diagram requirement: ≥ 2 Mermaid diagrams, or `## Diagrams — N/A` with justification.
 
-### Seal
+### Seal + mark state + publish
 ```bash
-devflow seal --completing plan --slug $SLUG
+devflow seal --completing plan --slug $SLUG --issue-id $ISSUE_ID
 # If diagrams not applicable:
-devflow seal --completing plan --slug $SLUG --waive-diagrams
-```
+devflow seal --completing plan --slug $SLUG --issue-id $ISSUE_ID --waive-diagrams
 
-### Mark state + publish
-```bash
 python -c "
 import json; p='features/$SLUG/ops/state.json'
 s=json.load(open(p)); s['plan_approved']=True; json.dump(s,open(p,'w'),indent=2)
 "
-# Note: in the agent layer, plan_approved is set after a human reviews and approves
-# the plan in Paperclip. For the manual pilot, set it yourself once you're happy.
+# In the agent layer, plan_approved is set after human review in Paperclip.
+# For the manual pilot, set it once you're satisfied with the plan.
 
 devflow publish-artifacts --phase plan --slug $SLUG --issue-id $ISSUE_ID
 ```
@@ -227,10 +207,10 @@ devflow publish-artifacts --phase plan --slug $SLUG --issue-id $ISSUE_ID
 
 ### Gate
 ```bash
-devflow gate --entering build --slug $SLUG --feature-type connector
+devflow gate --entering build --slug $SLUG --issue-id $ISSUE_ID --feature-type connector
 ```
 
-This also checks `connectors/<name>/` scaffold exists. Create it if absent:
+Connector check: `connectors/<name>/` scaffold must exist:
 ```bash
 mkdir -p connectors/$SLUG
 ```
@@ -245,15 +225,11 @@ mkdir -p connectors/$SLUG
 Iron Law: `## Test Output` must contain verbatim pytest output with `N passed`.
 Copy from terminal — do not write this by hand.
 
-### Seal
+### Seal + publish
 ```bash
-devflow seal --completing build --slug $SLUG
-```
+devflow seal --completing build --slug $SLUG --issue-id $ISSUE_ID
+# iron_law_met: true is written to Paperclip state automatically on pass
 
-State updates (`iron_law_met: true`) are written automatically on pass.
-
-### Publish
-```bash
 devflow publish-artifacts --phase build --slug $SLUG --issue-id $ISSUE_ID
 ```
 
@@ -263,7 +239,7 @@ devflow publish-artifacts --phase build --slug $SLUG --issue-id $ISSUE_ID
 
 ### Gate
 ```bash
-devflow gate --entering review --slug $SLUG
+devflow gate --entering review --slug $SLUG --issue-id $ISSUE_ID
 ```
 
 ### Run code-review skill (fresh context — do not reuse build session)
@@ -276,13 +252,11 @@ Provide only: `specs/prd.md`, `plans/plan.md`, `build/tdd-summary.md`, `git diff
 
 Must contain `**Decision:** PASS` or `**Decision:** FAIL`.
 
-### If Decision = FAIL
-
-Fix the findings, re-run TDD, re-run the review skill. Do not skip findings.
+If FAIL: fix the findings, re-run TDD, re-run the review. Do not skip findings.
 
 ### Seal + mark state + publish
 ```bash
-devflow seal --completing review --slug $SLUG
+devflow seal --completing review --slug $SLUG --issue-id $ISSUE_ID
 
 python -c "
 import json; p='features/$SLUG/ops/state.json'
@@ -298,12 +272,10 @@ devflow publish-artifacts --phase review --slug $SLUG --issue-id $ISSUE_ID
 
 ### Gate
 ```bash
-devflow gate --entering qa --slug $SLUG
+devflow gate --entering qa --slug $SLUG --issue-id $ISSUE_ID
 ```
 
-### Run QA skill
-
-Connector minimum: **Tier 3** (unit + integration + contract tests).
+### Run QA skill (Tier 3 required for connectors)
 
 ```
 /qa    → features/$SLUG/qa/evidence.md
@@ -315,15 +287,12 @@ Connector minimum: **Tier 3** (unit + integration + contract tests).
 - `## Test Output` — verbatim pytest output
 - `## Connector QA` — contract test result must show PASS
 
-### Seal
+### Seal + publish
 ```bash
-devflow seal --completing qa --slug $SLUG
+devflow seal --completing qa --slug $SLUG --issue-id $ISSUE_ID
 # If coverage < 70% with justification:
-devflow seal --completing qa --slug $SLUG --waive-coverage
-```
+devflow seal --completing qa --slug $SLUG --issue-id $ISSUE_ID --waive-coverage
 
-### Publish
-```bash
 devflow publish-artifacts --phase qa --slug $SLUG --issue-id $ISSUE_ID
 ```
 
@@ -342,7 +311,7 @@ s=json.load(open(p)); s['security_triggered']=False; json.dump(s,open(p,'w'),ind
 
 If triggered:
 
-### Run security-review skill (Opus tier required — use the most capable model)
+### Run security-review skill (Opus tier — most capable model)
 
 ```
 /security-review    → features/$SLUG/qa/security-review.md
@@ -350,17 +319,15 @@ If triggered:
 
 Must contain `**max_severity:** <level>` and `**sign_off:** <agent-id>`.
 
-### Seal
+### Seal + publish
 ```bash
-devflow seal --completing security --slug $SLUG
+devflow seal --completing security --slug $SLUG --issue-id $ISSUE_ID
+# max_severity is written to Paperclip state automatically on pass
+
+devflow publish-artifacts --phase security --slug $SLUG --issue-id $ISSUE_ID
 ```
 
-State update (`max_severity`) is written automatically.
-
-### If max_severity = high
-
-Post a `GATE-WAIVER` comment on the Paperclip issue before proceeding:
-
+**If max_severity = high:** post a `GATE-WAIVER` comment on the Paperclip issue:
 ```
 GATE-WAIVER
 gate: security-severity
@@ -369,14 +336,7 @@ approved-by: paulrussell
 expires: YYYY-MM-DD
 ```
 
-### If max_severity = critical
-
-Hard stop. Fix the code. This cannot be waived.
-
-### Publish
-```bash
-devflow publish-artifacts --phase security --slug $SLUG --issue-id $ISSUE_ID
-```
+**If max_severity = critical:** hard stop. Fix the code. Cannot be waived.
 
 ---
 
@@ -384,11 +344,11 @@ devflow publish-artifacts --phase security --slug $SLUG --issue-id $ISSUE_ID
 
 ### Gate
 ```bash
-devflow gate --entering deploy --slug $SLUG
+devflow gate --entering deploy --slug $SLUG --issue-id $ISSUE_ID
 ```
 
-Checks: `max_severity ≤ medium` (or GATE-WAIVER), `qa/evidence.md` present with
-`## Connector QA` section, `security-review.md` present if triggered.
+Checks: `max_severity ≤ medium` (or GATE-WAIVER present), `qa/evidence.md` with
+`## Connector QA` PASS, `security-review.md` if triggered.
 
 ### Run deploy skill
 
@@ -400,7 +360,7 @@ Must contain `## Steps`, `## Rollback` (≥ 1 step), `## Health Checks` (≥ 1 c
 
 ### Seal + publish
 ```bash
-devflow seal --completing deploy --slug $SLUG
+devflow seal --completing deploy --slug $SLUG --issue-id $ISSUE_ID
 devflow publish-artifacts --phase deploy --slug $SLUG --issue-id $ISSUE_ID
 ```
 
@@ -409,20 +369,13 @@ devflow publish-artifacts --phase deploy --slug $SLUG --issue-id $ISSUE_ID
 ## Step 10 — Done
 
 ```bash
-# Seal done — writes artifact_contract_met: true to manifest
-devflow seal --completing done --slug $SLUG
-
-# Final gate check
-devflow gate --entering done --slug $SLUG
-
-# Publish final manifest
+devflow seal --completing done --slug $SLUG --issue-id $ISSUE_ID
+devflow gate --entering done --slug $SLUG --issue-id $ISSUE_ID
 devflow publish-artifacts --phase done --slug $SLUG --issue-id $ISSUE_ID
-
-# Metrics
 devflow metrics --slug $SLUG
 ```
 
-Expected metrics output:
+Expected:
 ```
 feature: my-connector-v2
   iron_law_met:          true
@@ -438,21 +391,19 @@ feature: my-connector-v2
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `gate blocked: state.prd_complete is not set` | Forgot to update state.json | Run the python state-update one-liner for `prd_complete` |
+| `gate blocked: state.prd_complete is not set` | Forgot state one-liner | Run the `prd_complete` one-liner from Step 3 |
 | `Iron Law check failed` | `## Test Output` has no regex match | Paste verbatim pytest output; must contain `N passed` |
-| `gate blocked: connectors/ directory does not exist` | Connector scaffold missing | `mkdir -p connectors/$SLUG` |
+| `gate blocked: connectors/ directory does not exist` | Scaffold missing | `mkdir -p connectors/$SLUG` |
 | `gate blocked: max_severity is 'high'` | Security findings | Post `GATE-WAIVER` comment on Paperclip issue |
 | `gate blocked: max_severity is 'critical'` | Critical security finding | Fix the code — cannot be waived |
 | `publish-artifacts: BLOCKED` | Critical artifact upload failed | Check `PAPERCLIP_API_KEY`; retry |
 | `coverage_pct below threshold` | Tests cover < 70% | Write more tests or `--waive-coverage` with justification |
 | `## Connector QA section missing` | QA skill missed connector checks | Re-run `/qa` with connector context |
-| `devflow: command not found` | CLI not on PATH | Check your alias or `pip install -e .` |
+| `devflow: command not found` | CLI not on PATH | Check alias or `pip install -e .` |
 
 ---
 
 ## Success Criteria
-
-The pilot is complete when:
 
 - [ ] All 9 artifacts present in `features/$SLUG/`
 - [ ] `devflow metrics --slug $SLUG` shows `artifact_contract_met: true`
