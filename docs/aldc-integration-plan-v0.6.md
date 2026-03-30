@@ -983,7 +983,7 @@ This ensures compliance metrics reflect v3 pipeline health, not legacy debt.
 
 **Note:** Cleanup (WS1) must complete before any code changes begin. It establishes the clean Paperclip baseline that all subsequent work depends on.
 
-**Progress last updated: 2026-03-30. Branch: `v3-paperclip`. Commit: `e2c9478`.**
+**Progress last updated: 2026-03-30. Branch: `v3-paperclip`. Commit: `c61303e`.**
 
 | # | Workstream | Status | Key files |
 |---|---|---|---|
@@ -993,10 +993,10 @@ This ensures compliance metrics reflect v3 pipeline health, not legacy debt.
 | 4 | Iron Law gate in tdd skill | ✅ Done | `skills/tdd/SKILL.md` (Iron Law + cognitive debt + git-blame checklists; tdd-summary template updated) |
 | 5 | `devflow orient` CLI | ✅ Done | `devflow/orient.py`; `devflow/cli.py` (`orient` command); `paperclip.py` (`list_comments`) |
 | 6 | `devflow gate` + `devflow seal` CLI | ✅ Done | `devflow/gatekeeper.py`; `devflow/cli.py` (`gate`, `seal` commands) |
-| 7 | `devflow publish-artifacts` CLI | 🔲 Next | `devflow/artifact_publisher.py` (to create); `devflow/cli.py` |
-| 8 | `devflow migrate-v3` CLI | 🔲 Todo | `devflow/cli.py` |
-| 9 | `devflow metrics` CLI | 🔲 Next | `devflow/metrics.py` (to create); `devflow/cli.py` |
-| 10 | New skills: security-review, architecture-diagrams, code-review, qa, deploy | 🔲 Todo | `skills/*/SKILL.md` |
+| 7 | `devflow publish-artifacts` CLI | ✅ Done | `devflow/artifact_publisher.py`; `devflow/cli.py` |
+| 8 | `devflow migrate-v3` CLI | ✅ Done | `devflow/migrate.py`; `devflow/cli.py` |
+| 9 | `devflow metrics` CLI | ✅ Done | `devflow/metrics.py`; `devflow/cli.py` |
+| 10 | New skills: security-review, architecture-diagrams, code-review, qa, deploy | ✅ Done | `skills/security-review/SKILL.md`, `skills/architecture-diagrams/SKILL.md`, `skills/code-review/SKILL.md`, `skills/qa/SKILL.md`, `skills/deploy/SKILL.md` |
 | 11 | Connector skills: connector-build + extensions | 🔲 Todo | `skills/connector-build/SKILL.md` |
 | 12 | Agent refactor: feature/builder/reviewer/qa/sre + CEO | 🔲 Todo | `agents/*/AGENTS.md` |
 | 13 | PRD + plan + tdd skill modifications | 🔲 Todo | `skills/write-a-prd/`, `skills/prd-to-plan/`, `skills/tdd/` |
