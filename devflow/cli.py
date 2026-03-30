@@ -1224,6 +1224,178 @@ def seal(
     raise typer.Exit(1)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# devflow publish-artifacts
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.command(name="publish-artifacts")
+def publish_artifacts(
+    issue_id: Annotated[str, typer.Option("--issue-id", help="Paperclip issue UUID")],
+    slug: Annotated[str, typer.Option("--slug", help="Feature slug")],
+    phase: Annotated[str, typer.Option("--phase", help="Pipeline phase (prd/plan/build/review/qa/security/deploy/done)")],
+    dir: Annotated[
+        Optional[str],
+        typer.Option("--dir", help="Feature directory (default: ./features/<slug>)"),
+    ] = None,
+):
+    """
+    Upload phase artifacts to Paperclip and record results in
+    ops/verification-manifest.json.
+
+    For each artifact defined for the phase in the artifact contract, checks
+    that the local file exists, uploads it via PUT /api/issues/{id}/documents/{key},
+    and records the revision ID in the manifest.
+
+    Exit 0 = all critical artifacts uploaded successfully.
+    Exit 1 = one or more critical artifacts failed to upload.
+
+    Requires PAPERCLIP_API_KEY.
+    """
+    import asyncio
+    from pathlib import Path
+    from devflow.artifact_publisher import publish_artifacts as _publish, PHASE_ARTIFACTS
+
+    feature_dir = Path(dir) if dir else Path.cwd() / "features" / slug
+
+    valid_phases = list(PHASE_ARTIFACTS.keys())
+    if phase not in valid_phases:
+        console.print(
+            f"[red]✗[/red] Unknown phase [bold]{phase}[/bold]. "
+            f"Valid phases: {', '.join(valid_phases)}"
+        )
+        raise typer.Exit(1)
+
+    config = Config()
+    if not config.paperclip_enabled:
+        console.print(
+            "[red]✗[/red] Paperclip credentials not configured. "
+            "Set PAPERCLIP_API_KEY or see docs/runbook-prefect-creds.md."
+        )
+        raise typer.Exit(1)
+
+    from devflow.paperclip import client_from_env
+
+    run_id = os.environ.get("PAPERCLIP_RUN_ID", "")
+    pc = client_from_env(run_id=run_id)
+    if pc is None:
+        console.print("[red]✗[/red] Could not build Paperclip client from environment.")
+        raise typer.Exit(1)
+
+    async def _run() -> int:
+        async with pc:
+            console.print(
+                f"[dim]publish-artifacts:[/dim] issue={issue_id}  slug={slug}  "
+                f"phase={phase}  dir={feature_dir}"
+            )
+            result = await _publish(
+                issue_id=issue_id,
+                slug=slug,
+                phase=phase,
+                feature_dir=feature_dir,
+                pc=pc,
+            )
+
+        if not result.uploads and not result.critical_failures:
+            console.print(f"[dim]No artifacts defined for phase {phase}.[/dim]")
+            return 0
+
+        for upload in result.uploads:
+            if upload.status == "ok":
+                console.print(
+                    f"  [green]✓[/green]  {upload.key}  "
+                    f"[dim]{upload.path}  rev={upload.revision_id}[/dim]"
+                )
+            elif upload.status == "missing":
+                console.print(f"  [yellow]⚠[/yellow]  {upload.key}  [dim]{upload.path}[/dim]  — missing")
+            else:
+                console.print(
+                    f"  [red]✗[/red]  {upload.key}  [dim]{upload.path}[/dim]  "
+                    f"— {upload.error}"
+                )
+
+        for w in result.warnings:
+            console.print(f"  [yellow]⚠[/yellow]  {w}")
+
+        if result.critical_failures:
+            console.print(f"\n[red]✗[/red] publish-artifacts BLOCKED — critical artifact(s) failed:")
+            for cf in result.critical_failures:
+                console.print(f"  [red]FAIL[/red]  {cf}")
+            return 1
+
+        ok_count = sum(1 for u in result.uploads if u.status == "ok")
+        console.print(f"\n[green]✓[/green] publish-artifacts OK — {ok_count} artifact(s) uploaded")
+        return 0
+
+    exit_code = asyncio.run(_run())
+    raise typer.Exit(exit_code)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# devflow metrics
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.command()
+def metrics(
+    slug: Annotated[
+        Optional[str],
+        typer.Option("--slug", help="Feature slug for per-feature report"),
+    ] = None,
+    summary: Annotated[
+        bool,
+        typer.Option("--summary", help="Print summary across all features"),
+    ] = False,
+    output: Annotated[
+        Optional[str],
+        typer.Option("--output", help="Write markdown report to this file (requires --summary)"),
+    ] = None,
+    dir: Annotated[
+        Optional[str],
+        typer.Option("--dir", help="Root directory to scan for features/ (default: CWD)"),
+    ] = None,
+):
+    """
+    Report metrics from verification-manifest.json files.
+
+    Per-feature:   devflow metrics --slug <slug>
+    Summary:       devflow metrics --summary
+    Markdown file: devflow metrics --summary --output metrics-report.md
+    """
+    from pathlib import Path as _Path
+    from devflow.metrics import (
+        report_slug,
+        print_slug_report,
+        compute_summary,
+        print_summary_report,
+        build_markdown_report,
+    )
+
+    scan_root = _Path(dir) if dir else _Path.cwd()
+
+    if slug and not summary:
+        try:
+            m = report_slug(slug, scan_root)
+        except FileNotFoundError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(1)
+        print_slug_report(m)
+        raise typer.Exit(0)
+
+    if summary or output:
+        s = compute_summary(scan_root)
+        print_summary_report(s)
+        if output:
+            md = build_markdown_report(s)
+            out_path = _Path(output)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(md, encoding="utf-8")
+            console.print(f"\n[green]✓[/green] Markdown report written to {out_path}")
+        raise typer.Exit(0)
+
+    # Neither --slug nor --summary provided
+    console.print("[yellow]Usage:[/yellow] devflow metrics --slug <slug>  OR  devflow metrics --summary")
+    raise typer.Exit(1)
+
+
 def _find_devflow_yaml() -> "Optional[Path]":
     """Walk up from cwd to find devflow.yaml."""
     from pathlib import Path
